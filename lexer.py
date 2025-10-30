@@ -9,6 +9,7 @@ class Lexer:
         "else": ElseToken,
         "elif": ElifToken,
         "while": WhileToken,
+        "len": LenToken,
     }
 
     def __init__(self, data: str):

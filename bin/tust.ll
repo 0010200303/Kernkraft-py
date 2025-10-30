@@ -2,49 +2,42 @@
 target triple = "x86_64-pc-windows-msvc"
 target datalayout = ""
 
-%"Player" = type {i8*, i32}
 declare external i32 @"printf"(i8* %".1", ...)
 
 define i32 @"main"(i32 %".1")
 {
 entry:
-  %"x" = alloca i32
-  %"player_arr" = alloca [2 x %"Player"]
+  %"i" = alloca i32
+  %"string" = alloca i8*
   ; Expressions originating at 0:0
-  %".ptr:player_arr.0.name" = getelementptr [2 x %"Player"], [2 x %"Player"]* %"player_arr", i32 0, i32 0, i32 0
-  %".ptr.literal:tust0" = getelementptr [6 x i8], [6 x i8]* @".literal:tust0", i32 0, i32 0
-  store i8* %".ptr.literal:tust0", i8** %".ptr:player_arr.0.name"
-  %".ptr:player_arr.0.score" = getelementptr [2 x %"Player"], [2 x %"Player"]* %"player_arr", i32 0, i32 0, i32 1
-  store i32 1337, i32* %".ptr:player_arr.0.score"
-  %".ptr:player_arr.1.name" = getelementptr [2 x %"Player"], [2 x %"Player"]* %"player_arr", i32 0, i32 1, i32 0
-  %".ptr.literal:tust1" = getelementptr [6 x i8], [6 x i8]* @".literal:tust1", i32 0, i32 0
-  store i8* %".ptr.literal:tust1", i8** %".ptr:player_arr.1.name"
-  %".ptr:player_arr.1.score" = getelementptr [2 x %"Player"], [2 x %"Player"]* %"player_arr", i32 0, i32 1, i32 1
-  store i32 2807, i32* %".ptr:player_arr.1.score"
-  store i32 1, i32* %"x"
-  %".load:x" = load i32, i32* %"x"
-  %".ptr:player_arr.IdentifierNode(\22x\22, fields=[]) at 29:25
-" = getelementptr [2 x %"Player"], [2 x %"Player"]* %"player_arr", i32 0, i32 %".load:x"
-  call void @"print_player"(%"Player"* %".ptr:player_arr.IdentifierNode(\22x\22, fields=[]) at 29:25
-")
+  %".ptr.literal:Tust!" = getelementptr [6 x i8], [6 x i8]* @".literal:Tust!", i32 0, i32 0
+  store i8* %".ptr.literal:Tust!", i8** %"string"
+  store i32 0, i32* %"i"
+  %".load:i" = load i32, i32* %"i"
+  %".lt" = icmp slt i32 %".load:i", 5
+  br i1 %".lt", label %"while.loop", label %"while.after"
+while.loop:
+  %"c" = alloca i8
+  ; while body
+  %".load:i.1" = load i32, i32* %"i"
+  %".ptr:string.i" = getelementptr i8*, i8** %"string", i32 0
+  %".load:string.i" = load i8*, i8** %".ptr:string.i"
+  %".ptr:string.i.1" = getelementptr i8, i8* %".load:string.i", i32 %".load:i.1"
+  %".load:string.i.1" = load i8, i8* %".ptr:string.i.1"
+  store i8 %".load:string.i.1", i8* %"c"
+  %".ptr.literal:%c\5cn" = getelementptr [4 x i8], [4 x i8]* @".literal:%c\5cn", i32 0, i32 0
+  %".load:c" = load i8, i8* %"c"
+  %".call:printf" = call i32 (i8*, ...) @"printf"(i8* %".ptr.literal:%c\5cn", i8 %".load:c")
+  %".load:i.2" = load i32, i32* %"i"
+  %".add" = add i32 %".load:i.2", 1
+  store i32 %".add", i32* %"i"
+  ; termination test
+  %".load:i.3" = load i32, i32* %"i"
+  %".lt.1" = icmp slt i32 %".load:i.3", 5
+  br i1 %".lt.1", label %"while.loop", label %"while.after"
+while.after:
   ret i32 0
 }
 
-define void @"print_player"(%"Player"* %"player")
-{
-entry:
-  %".ptr.literal:Player %s:\5cn" = getelementptr [12 x i8], [12 x i8]* @".literal:Player %s:\5cn", i32 0, i32 0
-  %".ptr:player.name" = getelementptr %"Player", %"Player"* %"player", i32 0, i32 0
-  %".load:player.name" = load i8*, i8** %".ptr:player.name"
-  %".call:printf" = call i32 (i8*, ...) @"printf"(i8* %".ptr.literal:Player %s:\5cn", i8* %".load:player.name")
-  %".ptr.literal:\5ctscore: %d\5cn" = getelementptr [12 x i8], [12 x i8]* @".literal:\5ctscore: %d\5cn", i32 0, i32 0
-  %".ptr:player.score" = getelementptr %"Player", %"Player"* %"player", i32 0, i32 1
-  %".load:player.score" = load i32, i32* %".ptr:player.score"
-  %".call:printf.1" = call i32 (i8*, ...) @"printf"(i8* %".ptr.literal:\5ctscore: %d\5cn", i32 %".load:player.score")
-  ret void
-}
-
-@".literal:Player %s:\5cn" = private unnamed_addr constant [12 x i8] c"Player %s:\0a\00"
-@".literal:\5ctscore: %d\5cn" = private unnamed_addr constant [12 x i8] c"\09score: %d\0a\00"
-@".literal:tust0" = private unnamed_addr constant [6 x i8] c"tust0\00"
-@".literal:tust1" = private unnamed_addr constant [6 x i8] c"tust1\00"
+@".literal:Tust!" = private unnamed_addr constant [6 x i8] c"Tust!\00"
+@".literal:%c\5cn" = private unnamed_addr constant [4 x i8] c"%c\0a\00"

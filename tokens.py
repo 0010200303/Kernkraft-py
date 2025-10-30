@@ -133,4 +133,7 @@ class ElifToken(BaseToken):
 
 class WhileToken(BaseToken):
     pass
+
+class LenToken(BaseToken):
+    pass
 # endregion

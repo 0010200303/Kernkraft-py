@@ -29,7 +29,9 @@ if __name__ == "__main__":
             f.write(ir)
 
         # link IR using clang
-        os.system("clang bin/tust.ll -o bin/tust.exe")
+        os.system("clang bin/tust.ll -o bin/tust")
 
         # run the generated executable
-        os.system("bin\\tust.exe")
+        print()
+        os.system("./bin/tust")
+        print()

@@ -7,6 +7,8 @@ type_from_name_mapping = {
     "str": ir.PointerType(ir.IntType(8)),
     "bool": ir.IntType(1),
     "void": ir.VoidType(),
+    "char": ir.IntType(8),
+    "i8": ir.IntType(8),
 }
 
 name_from_type_mapping = {
@@ -14,6 +16,7 @@ name_from_type_mapping = {
     ir.PointerType(ir.IntType(8)): "str",
     ir.IntType(1): "i1/bool",
     ir.VoidType(): "void",
+    ir.IntType(8): "i8/char",
 }
 
 reserved_types = set(type_from_name_mapping.keys())
@@ -21,17 +24,18 @@ reserved_types = set(type_from_name_mapping.keys())
 reserved_keywords = {
     "struct",
     "func",
+    "len",
 }
 
 class ASTNode(abc.ABC):
     _type: ir.Type = None
 
     @abc.abstractmethod
-    def __repr__(self, level: int = 0):
+    def __repr__(self, level: int = 0) -> str:
         pass
 
     @abc.abstractmethod
-    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
         pass
 
 class TrackedNode(ASTNode):
@@ -89,6 +93,21 @@ class IdentifierNode(TrackedNode):
     def __repr__(self, level: int = 0):
         return "\t" * level + f'IdentifierNode("{self.identifier}", fields={self.fields}) at {self.line}:{self.column}\n'
 
+    def fields_to_str(self) -> str:
+        if not self.fields:
+            return ""
+
+        s = ""
+
+        for field in self.fields:
+            if isinstance(field, IdentifierNode):
+                s += "." + field.identifier
+            else:
+                s += "." + str(field)
+
+        # s = "." + ".".join([field.identifier if isinstance(field, IdentifierNode) else str(field) for field in self.fields])
+        return s
+
     def gep_into_fields(self, builder: ir.IRBuilder, module: ir.Module, ptr: ir.Value) -> ir.Value | ir.GEPInstr:
         if not self.fields:
             return ptr
@@ -101,6 +120,8 @@ class IdentifierNode(TrackedNode):
         else:
             current_field = ptr.allocated_type
 
+        indexing_string = False
+
         for field in self.fields:
             if isinstance(field, str):
                 field_index = current_field.field_names.index(field)
@@ -108,34 +129,39 @@ class IdentifierNode(TrackedNode):
 
                 indices.append(ir.Constant(ir.IntType(32), field_index))
             elif isinstance(field, int):
-                if field >= current_field.count:
+                if isinstance(current_field, ir.ArrayType) and field >= current_field.count:
                     raise IndexError(f"Array index {field} out of bounds for array of size {current_field.count} at {self.line}:{self.column}")
 
-                current_field = current_field.element
-
                 indices.append(ir.Constant(ir.IntType(32), field))
+
+                # indexing into string so stop since this is only gonna be a single character
+                if isinstance(current_field, ir.PointerType) and isinstance(current_field.pointee, ir.IntType) and current_field.pointee.width == 8:
+                    indexing_string = True
+                    break
+
+                current_field = current_field.element
             elif isinstance(field, IdentifierNode):
                 field_value = field.generate_ir(builder, module)
-                current_field = current_field.element
-
-                print(current_field.element)
 
                 indices.append(field_value)
 
+                # indexing into string so stop since this is only gonna be a single character
+                if isinstance(current_field, ir.PointerType) and isinstance(current_field.pointee, ir.IntType) and current_field.pointee.width == 8:
+                    indexing_string = True
+                    break
 
-                # field_ptr = field.generate_ir(builder, module)
-                # if not isinstance(field_ptr.type, ir.PointerType):
-                #     raise TypeError(f"Expected pointer type for array index at {field.line}:{field.column}, got {name_from_type_mapping.get(field_ptr.type, str(field_ptr.type))}")
+                current_field = current_field.element
 
-                # field_value = builder.load(field_ptr, name=".load:index:" + field.identifier)
-                # if not isinstance(field_value.type, ir.IntType):
-                #     raise TypeError(f"Expected integer type for array index at {field.line}:{field.column}, got {name_from_type_mapping.get(field_value.type, str(field_value.type))}")
-
-                # indices.append(field_value)
-
-                # current_field = current_field.element
-
-        return builder.gep(ptr, indices, name=".ptr:" + self.identifier + ('.' + '.'.join([str(field) for field in self.fields]) if self.fields else ''))
+        # special case for string indexing
+        if indexing_string == True:
+            if not (isinstance(current_field, ir.PointerType) and isinstance(current_field.pointee, ir.IntType) and current_field.pointee.width == 8):
+                raise TypeError(f"String indexing resulted in non-char type at {self.line}:{self.column}")
+            gep = builder.gep(ptr, indices[:-1], name=".ptr:" + self.identifier + self.fields_to_str())
+            load = builder.load(gep, name=".load:" + self.identifier + self.fields_to_str())
+            return builder.gep(load, [indices[-1]], name=".ptr:" + self.identifier + self.fields_to_str())
+        # normal gep
+        else:
+            return builder.gep(ptr, indices, name=".ptr:" + self.identifier + self.fields_to_str())
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         # check function args
@@ -144,7 +170,7 @@ class IdentifierNode(TrackedNode):
         if arg is not None:
             if isinstance(arg.type, ir.PointerType):
                 ptr = self.gep_into_fields(builder, module, arg)
-                return builder.load(ptr, name=".load:" + self.identifier + ('.' + '.'.join([str(field) for field in self.fields]) if self.fields else ''))
+                return builder.load(ptr, name=".load:" + self.identifier + self.fields_to_str())
 
             return arg
 
@@ -159,11 +185,11 @@ class IdentifierNode(TrackedNode):
         if isinstance(ptr, ir.GEPInstr):
             if isinstance(ptr.type.pointee, ir.Aggregate):
                 return ptr
-            return builder.load(ptr, name=".load:" + self.identifier + ('.' + '.'.join([str(field) for field in self.fields]) if self.fields else ''))
+            return builder.load(ptr, name=".load:" + self.identifier + self.fields_to_str())
         elif isinstance(ptr.allocated_type, ir.Aggregate):
             return ptr
         elif ptr is not None:
-            return builder.load(ptr, name=".load:" + self.identifier + ('.' + '.'.join([str(field) for field in self.fields]) if self.fields else ''))
+            return builder.load(ptr, name=".load:" + self.identifier + self.fields_to_str())
 
         raise ValueError(f"Variable {self.identifier} not found at {self.line}:{self.column}")
 
@@ -220,8 +246,10 @@ class AssignmentNode(TrackedNode):
 
                 # if value is not None:
                 if var_type is not None and var_type != value.type:
-                    raise TypeError(f"Type mismatch for variable {self.identifier.identifier} at {self.line}:{self.column}: expected {self.typed}, got {name_from_type_mapping[value.type]}")
-                var_type = value.type
+                    if isinstance(var_type, ir.IntType) and var_type.width == 8 and isinstance(value.type, ir.IntType) and value.type.width == 32:
+                        value = builder.trunc(value, var_type, name=".trunc:" + self.identifier.identifier)
+                    else:
+                        raise TypeError(f"Type mismatch for variable {self.identifier.identifier} at {self.line}:{self.column}: expected {self.typed}, got {name_from_type_mapping[value.type]}")
 
             builder.position_at_start(builder.block)
             ptr = builder.alloca(var_type, name=self.identifier.identifier)
@@ -482,6 +510,25 @@ class WhileNode(TrackedNode):
 
         builder.position_at_start(after_bb)
 
+class LenNode(TrackedNode):
+    def __init__(self, operand, line: int, column: int):
+        super().__init__(line, column)
+        self.operand = operand
+
+    def __repr__(self, level: int = 0) -> str:
+        ret = "\t" * level
+        ret += f"LenNode() at {self.line}:{self.column}\n"
+        ret += self.operand.__repr__(level + 1)
+        return ret
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        operand_value = self.operand.generate_ir(builder, module)
+
+
+        if not (isinstance(operand_value.type, ir.Aggregate) or isinstance(operand_value.allocated_type, ir.Aggregate)):
+            raise TypeError(f"Length operand must be an aggregate at {self.line}:{self.column}")
+
+        return ir.Constant(ir.IntType(32), 2)
 # endregion
 
 # region operators

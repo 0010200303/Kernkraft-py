@@ -99,6 +99,8 @@ class Parser:
             return self.parse_if()
         elif self.check(WhileToken):
             return self.parse_while()
+        elif self.check(LenToken):
+            return self.parse_len()
 # endregion
         else:
             raise Exception(f"Unexpected token in expression: {self.current_token}")
@@ -411,6 +413,13 @@ class Parser:
         self.consume(DedentToken, f"Expected dedentation after while body but got {self.current_token}")
 
         return while_node
+
+    def parse_len(self) -> LenNode:
+        token = self.consume(LenToken, f"Expected 'len' keyword but got {self.current_token}")
+        self.consume(OpenParenthesisToken, f"Expected '(' after 'len' but got {self.current_token}")
+        expr = self.parse_expression()
+        self.consume(CloseParenthesisToken, f"Expected ')' after expression in 'len' but got {self.current_token}")
+        return LenNode(expr, token.line, token.column)
 
     def parse(self) -> ExpressionsNode:
         root = ExpressionsNode(0, 0)

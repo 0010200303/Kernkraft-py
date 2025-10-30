@@ -1,9 +1,0 @@
-"filename", "language", "Python", "LLVM", "comment", "blank", "total"
-"c:\Users\karat\Desktop\Kernkraft\ast_nodes.py", "Python", 274, 0, 10, 82, 366
-"c:\Users\karat\Desktop\Kernkraft\bin\tust.ll", "LLVM", 0, 28, 2, 3, 33
-"c:\Users\karat\Desktop\Kernkraft\ir_gen.py", "Python", 30, 0, 4, 11, 45
-"c:\Users\karat\Desktop\Kernkraft\lexer.py", "Python", 137, 0, 30, 48, 215
-"c:\Users\karat\Desktop\Kernkraft\main.py", "Python", 22, 0, 6, 8, 36
-"c:\Users\karat\Desktop\Kernkraft\parser.py", "Python", 172, 0, 9, 47, 228
-"c:\Users\karat\Desktop\Kernkraft\tokens.py", "Python", 73, 0, 6, 25, 104
-"Total", "-", 708, 28, 67, 224, 1027
