@@ -105,7 +105,6 @@ class IdentifierNode(TrackedNode):
             else:
                 s += "." + str(field)
 
-        # s = "." + ".".join([field.identifier if isinstance(field, IdentifierNode) else str(field) for field in self.fields])
         return s
 
     def gep_into_fields(self, builder: ir.IRBuilder, module: ir.Module, ptr: ir.Value) -> ir.Value | ir.GEPInstr:
@@ -138,8 +137,18 @@ class IdentifierNode(TrackedNode):
                 if isinstance(current_field, ir.PointerType) and isinstance(current_field.pointee, ir.IntType) and current_field.pointee.width == 8:
                     indexing_string = True
                     break
+                # dynamic array
+                elif isinstance(current_field, ir.IdentifiedStructType) and current_field.name.startswith("array."):
+                    current_field = current_field.elements[0].pointee
 
-                current_field = current_field.element
+                    gep = builder.gep(ptr, indices, name=".ptr.dynamicarray:" + self.identifier + self.fields_to_str())
+                    load = builder.load(gep, name=".load.dynamicarray:" + self.identifier + self.fields_to_str())
+                    ptr = load
+
+                    indices.clear()
+                    indices.append(ir.Constant(ir.IntType(32), field))
+                else:
+                    current_field = current_field.element
             elif isinstance(field, IdentifierNode):
                 field_value = field.generate_ir(builder, module)
 
@@ -213,6 +222,20 @@ class AssignmentNode(TrackedNode):
         ret += self.identifier.__repr__(level + 1)
         return ret
 
+    def generate_dynamic_array_type(self, builder: ir.IRBuilder, element_type: ir.Type) -> ir.LiteralStructType:
+        val = builder.module.context.identified_types.get("array." + str(element_type))
+        if val is not None:
+            return val
+
+        data_ptr_type = ir.PointerType(element_type)
+        length_type = ir.IntType(32)
+        cap_type = ir.IntType(32)
+
+        val = builder.module.context.get_identified_type("array." + str(element_type))
+        val.set_body(data_ptr_type, length_type, cap_type)
+
+        return val
+
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
         # check name validity
         if self.identifier.identifier in reserved_types:
@@ -236,7 +259,12 @@ class AssignmentNode(TrackedNode):
                     raise ValueError(f"Unknown type {self.typed} for variable {self.identifier.identifier} at {self.line}:{self.column}")
 
                 if self.typed_arr_len is not None:
-                    var_type = ir.ArrayType(var_type, self.typed_arr_len)
+                    if self.typed_arr_len > 0:
+                        var_type = ir.ArrayType(var_type, self.typed_arr_len)
+                    elif self.typed_arr_len == -1:
+                        var_type = self.generate_dynamic_array_type(builder, var_type)
+                    else:
+                        raise ValueError(f"Invalid array size {self.typed_arr_len} for variable {self.identifier.identifier} at {self.line}:{self.column}")
 
             value = None
             if self.value is not None:

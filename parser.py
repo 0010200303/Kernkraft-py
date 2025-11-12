@@ -210,8 +210,12 @@ class Parser:
 
             if self.check(OpenBracketToken):
                 self.advance()
-                arr_len_token = self.consume(IntegerLiteralToken, f"Expected array length integer literal after '[' but got {self.current_token}")
-                typed_arr_len = arr_len_token.value
+                if self.check(IntegerLiteralToken):
+                    arr_len_token = self.consume(IntegerLiteralToken, f"Expected array length integer literal after '[' but got {self.current_token}")
+                    typed_arr_len = arr_len_token.value
+                else:
+                    typed_arr_len = -1 # dynamic array size
+
                 self.consume(CloseBracketToken, f"Expected ']' after array length but got {self.current_token}")
 
         value_node = None
