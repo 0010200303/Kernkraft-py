@@ -8,7 +8,7 @@ def print_tokens(tokens: list) -> None:
         print(token)
 
 if __name__ == "__main__":
-    with open("tust.kk", "r", encoding="utf-8") as f:
+    with open("tust7.kk", "r", encoding="utf-8") as f:
         data = f.read()
 
         # tokenize

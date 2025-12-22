@@ -48,6 +48,17 @@ class Parser:
 
 
 
+    def parse_statement(self) -> ASTNode:
+        expression = self.parse_expression()
+
+        if self.check(AssignmentToken) or self.check(ColonToken):
+            if not isinstance(expression, (IdentifierNode, AccessNode)):
+                raise Exception(f"Invalid assignment target at {self.current_token_pos()}: {expression}")
+
+            return self.parse_assignment(expression)
+
+        return expression
+
     def get_prefix_binding_power(self) -> int | None:
         if self.check(MinusToken):
             return UNARY_PREFIX_BINDING_POWER
@@ -73,7 +84,7 @@ class Parser:
             return UnaryNegationNode(operand, operator_token.line, operator_token.column)
         elif self.check(OpenParenthesisToken):
             self.consume(OpenParenthesisToken)
-            expr = self.parse_expression()
+            expr = self.parse_statement()
             self.consume(CloseParenthesisToken, f"Expected ')' after expression but got {self.current_token}")
             return expr
 #region literals
@@ -93,7 +104,7 @@ class Parser:
             return self.parse_function()
         elif self.check(ReturnToken):
             token = self.consume(ReturnToken)
-            expr = self.parse_expression()
+            expr = self.parse_statement()
             return ReturnNode(expr, token.line, token.column)
         elif self.check(IfToken):
             return self.parse_if()
@@ -154,10 +165,31 @@ class Parser:
 
         raise Exception(f"Unexpected infix operator {self.current_token} at {self.current_token_pos()}")
 
+    def parse_postfix(self, left: ASTNode) -> ASTNode:
+        while True:
+            if self.check(DotToken):
+                self.consume(DotToken, f"Expected '.' but got {self.current_token}")
+                member = self.consume(IdentifierToken, f"Expected member name after '.' but got {self.current_token}")
+                left = MemberAccessNode(left, member.identifier, member.line, member.column)
+            elif self.check(OpenBracketToken):
+                self.consume(OpenBracketToken, f"Expected '[' but got {self.current_token}")
+                index = self.parse_expression()
+                left = IndexAccessNode(left, index, index.line, index.column)
+                self.consume(CloseBracketToken, f"Expected ']' but got {self.current_token}")
+            else:
+                break
+
+        return left
+
     def parse_expression(self, min_binding_power: int = 0) -> ASTNode:
         left = self.parse_prefix()
 
         while not (self.check(EndOfFileToken) or self.check(EndOfLineToken) or self.check(CloseParenthesisToken)):
+            new_left = self.parse_postfix(left)
+            if new_left is not left:
+                left = new_left
+                continue
+            
             binding_powers = self.get_infix_binding_power()
             if binding_powers is None:
                 break
@@ -186,8 +218,7 @@ class Parser:
             if self.check(EndOfFileToken):
                 raise Exception(f"Unexpected end of file in function call at {self.current_token_pos()}")
 
-            call_node.args.append(self.parse_expression())
-            print(self.current_token)
+            call_node.args.append(self.parse_statement())
 
             if self.check(CommaToken):
                 self.advance()
@@ -200,7 +231,7 @@ class Parser:
         self.consume(CloseParenthesisToken, f"Expected ')' after function arguments but got {self.current_token}")
         return call_node
 
-    def parse_assignment(self, identifier_node: IdentifierNode) -> AssignmentNode:
+    def parse_assignment(self, identifier_node: IdentifierNode | AccessNode) -> AssignmentNode:
         typed = None
         typed_arr_len = None
         if self.check(ColonToken):
@@ -221,43 +252,44 @@ class Parser:
         value_node = None
         if self.check(AssignmentToken):
             self.advance()
-            value_node = self.parse_expression()
+            value_node = self.parse_statement()
 
         return AssignmentNode(identifier_node, value_node, identifier_node.line, identifier_node.column, typed, typed_arr_len)
 
     def parse_identifier(self) -> IdentifierNode | AssignmentNode:
         token = self.consume(IdentifierToken, f"Expected identifier at {self.current_token_pos()} but got {self.current_token}")
+        return IdentifierNode(token.identifier, token.line, token.column)
 
-        fields: list[str | int | IdentifierNode] = []
+        # fields: list[str | int | IdentifierNode] = []
 
-        while self.check(DotToken) or self.check(OpenBracketToken):
-            if self.check(DotToken):
-                self.advance()
-                field_token = self.consume(IdentifierToken, f"Expected field name after '.' but got {self.current_token}")
-                fields.append(field_token.identifier)
-            elif self.check(OpenBracketToken):
-                self.advance()
+        # while self.check(DotToken) or self.check(OpenBracketToken):
+        #     if self.check(DotToken):
+        #         self.advance()
+        #         field_token = self.consume(IdentifierToken, f"Expected field name after '.' but got {self.current_token}")
+        #         fields.append(field_token.identifier)
+        #     elif self.check(OpenBracketToken):
+        #         self.advance()
 
-                if self.check(IntegerLiteralToken):
-                    index_token = self.consume(IntegerLiteralToken, f"Expected array index integer literal after '[' but got {self.current_token}")
-                    fields.append(index_token.value)
-                elif self.check(IdentifierToken):
-                    index_token = self.consume(IdentifierToken, f"Expected array index identifier after '[' but got {self.current_token}")
-                    fields.append(IdentifierNode(index_token.identifier, index_token.line, index_token.column))
+        #         if self.check(IntegerLiteralToken):
+        #             index_token = self.consume(IntegerLiteralToken, f"Expected array index integer literal after '[' but got {self.current_token}")
+        #             fields.append(index_token.value)
+        #         elif self.check(IdentifierToken):
+        #             index_token = self.consume(IdentifierToken, f"Expected array index identifier after '[' but got {self.current_token}")
+        #             fields.append(IdentifierNode(index_token.identifier, index_token.line, index_token.column))
 
-                self.consume(CloseBracketToken, f"Expected ']' after array index but got {self.current_token}")
+        #         self.consume(CloseBracketToken, f"Expected ']' after array index but got {self.current_token}")
 
-        identifier_node = IdentifierNode(token.identifier, token.line, token.column, fields)
+        # identifier_node = IdentifierNode(token.identifier, token.line, token.column, fields)
 
-        if self.check(AssignmentToken):
-            return self.parse_assignment(identifier_node)
-        elif self.check(ColonToken):
-            # dirty hack to fix if statement colon seen as type annotation
-            if self.check(EndOfLineToken, 1) is False:
-                if fields:
-                    raise Exception(f"Cannot assign to field access {token.identifier}.{'.'.join(fields)} at {self.current_token_pos()}")
-                return self.parse_assignment(identifier_node)
-        return identifier_node
+        # if self.check(AssignmentToken):
+        #     return self.parse_assignment(identifier_node)
+        # elif self.check(ColonToken):
+        #     # dirty hack to fix if statement colon seen as type annotation
+        #     if self.check(EndOfLineToken, 1) is False:
+        #         if fields:
+        #             raise Exception(f"Cannot assign to field access {token.identifier}.{'.'.join(fields)} at {self.current_token_pos()}")
+        #         return self.parse_assignment(identifier_node)
+        # return identifier_node
 
     def parse_struct(self) -> StructNode:
         token = self.consume(StructToken, f"Expected 'struct' keyword but got {self.current_token}")
@@ -273,7 +305,7 @@ class Parser:
                 self.advance()
                 continue
 
-            field_node = self.parse_identifier()
+            field_node = self.parse_statement()
             if not isinstance(field_node, AssignmentNode):
                 raise Exception(f"Expected field assignment in struct body but got {field_node}")
             struct_node.fields.append(field_node)
@@ -290,6 +322,7 @@ class Parser:
         
         while self.check(CloseParenthesisToken) is False:
             param = self.parse_identifier()
+            param = self.parse_assignment(param)
             if not isinstance(param, AssignmentNode):
                 raise Exception(f"Expected parameter assignment in function declaration but got {param}")
             elif param.value is not None:
@@ -321,7 +354,7 @@ class Parser:
                 self.advance()
                 continue
 
-            function_node.body.append(self.parse_expression())
+            function_node.body.append(self.parse_statement())
         self.consume(DedentToken, f"Expected dedentation after function body but got {self.current_token}")
 
         return function_node
@@ -341,7 +374,7 @@ class Parser:
                 self.advance()
                 continue
 
-            if_node.then_branch.append(self.parse_expression())
+            if_node.then_branch.append(self.parse_statement())
         self.consume(DedentToken, f"Expected dedentation after if body but got {self.current_token}")
 
         if self.check(ElseToken):
@@ -366,7 +399,7 @@ class Parser:
                 self.advance()
                 continue
 
-            else_branch.append(self.parse_expression())
+            else_branch.append(self.parse_statement())
         self.consume(DedentToken, f"Expected dedentation after else body but got {self.current_token}")
 
         return else_branch
@@ -386,7 +419,7 @@ class Parser:
                 self.advance()
                 continue
 
-            elif_node.then_branch.append(self.parse_expression())
+            elif_node.then_branch.append(self.parse_statement())
         self.consume(DedentToken, f"Expected dedentation after elif body but got {self.current_token}")
 
         if self.check(ElseToken):
@@ -413,7 +446,7 @@ class Parser:
                 self.advance()
                 continue
 
-            while_node.body.append(self.parse_expression())
+            while_node.body.append(self.parse_statement())
         self.consume(DedentToken, f"Expected dedentation after while body but got {self.current_token}")
 
         return while_node
@@ -421,7 +454,7 @@ class Parser:
     def parse_len(self) -> LenNode:
         token = self.consume(LenToken, f"Expected 'len' keyword but got {self.current_token}")
         self.consume(OpenParenthesisToken, f"Expected '(' after 'len' but got {self.current_token}")
-        expr = self.parse_expression()
+        expr = self.parse_statement()
         self.consume(CloseParenthesisToken, f"Expected ')' after expression in 'len' but got {self.current_token}")
         return LenNode(expr, token.line, token.column)
 
@@ -434,5 +467,5 @@ class Parser:
                 self.advance()
                 continue
 
-            current.children.append(self.parse_expression())
+            current.children.append(self.parse_statement())
         return root
