@@ -480,6 +480,22 @@ class AssignmentNode(TrackedNode):
             if self.typed is not None:
                 raise TypeError(f"Variable {self.identifier.identifier} already declared at {self.line}:{self.column}")
 
+            if not isinstance(dst_ptr.type, ir.PointerType):
+                raise TypeError(f"Assignment target is not addressable at {self.line}:{self.column}")
+
+            dst_ty = dst_ptr.type.pointee
+
+            # Allow "struct copy": dst is T (stored via T*), RHS is T* (an lvalue pointer).
+            if dst_ty != value.type:
+                if isinstance(dst_ty, ir.Aggregate) and isinstance(value.type, ir.PointerType) and value.type.pointee == dst_ty:
+                    value = builder.load(value, name=".load.copy")
+                elif isinstance(dst_ty, ir.IntType) and dst_ty.width == 8 and isinstance(value.type, ir.IntType) and value.type.width == 32:
+                    value = builder.trunc(value, dst_ty, name=".trunc.assign")
+                else:
+                    exp = name_from_type_mapping.get(dst_ty, str(dst_ty))
+                    got = name_from_type_mapping.get(value.type, str(value.type))
+                    raise TypeError(f"Type mismatch in assignment at {self.line}:{self.column}: expected {exp}, got {got}")
+
             builder.store(value, dst_ptr)
 
 # region literals
@@ -541,6 +557,18 @@ class StructNode(TrackedNode):
         if module.globals.get(self.name):
             raise ValueError(f"Struct {self.name} already defined at {self.line}:{self.column}")
 
+        # Reuse any previously-created identified type (prevents duplicate %"Name" types).
+        ctx = builder.module.context
+        struct_ty = ctx.identified_types.get(self.name)
+        if struct_ty is None:
+            struct_ty = ctx.get_identified_type(self.name)
+        else:
+            if getattr(struct_ty, "is_opaque", False) is False and getattr(struct_ty, "elements", None):
+                raise ValueError(f"Struct {self.name} already defined at {self.line}:{self.column}")
+
+        type_from_name_mapping[self.name] = struct_ty
+        name_from_type_mapping[struct_ty] = self.name
+
         field_names = []
         field_types = []
         for field in self.fields:
@@ -549,21 +577,27 @@ class StructNode(TrackedNode):
             elif field.value is not None:
                 raise ValueError(f"Field {field.identifier.identifier} in struct {self.name} cannot have an initial value at {field.line}:{field.column}")
 
-            field_type = type_from_name_mapping.get(field.typed)
+            # Allow self-referential member types by lowering to pointer-to-self.
+            if field.typed == self.name:
+                field_type = ir.PointerType(struct_ty)
+            else:
+                field_type = type_from_name_mapping.get(field.typed)
+
             if field_type is None:
-                raise ValueError(f"Unknown type {field.typed} for field {field.identifier.identifier} in struct {self.name} at {field.line}:{field.column}")
+                raise ValueError(f"Unknown type '{field.typed}' for field {field.identifier.identifier} in struct {self.name} at {field.line}:{field.column}")
 
             if field_names.count(field.identifier.identifier) != 0:
-                raise ValueError(f"Duplicate field {field.identifier.identifier} in struct {self.name} at {field.line}:{field.column}")
+                raise ValueError(f"Duplicate field '{field.identifier.identifier}' in struct {self.name} at {field.line}:{field.column}")
 
             field_types.append(field_type)
             field_names.append(field.identifier.identifier)
 
-        builder.module.context.get_identified_type(self.name).set_body(*field_types)
-        builder.module.context.get_identified_type(self.name).field_names = field_names
+        struct_ty.set_body(*field_types)
+        struct_ty.field_names = field_names
 
-        type_from_name_mapping[self.name] = builder.module.context.get_identified_type(self.name)
-        name_from_type_mapping[builder.module.context.get_identified_type(self.name)] = self.name
+        # Keep mappings pointing at the same struct_ty instance (do NOT re-fetch it).
+        type_from_name_mapping[self.name] = struct_ty
+        name_from_type_mapping[struct_ty] = self.name
 
 class FunctionNode(TrackedNode):
     def __init__(self, name: str, line: int, column: int):
