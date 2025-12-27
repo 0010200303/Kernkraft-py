@@ -136,4 +136,7 @@ class WhileToken(BaseToken):
 
 class LenToken(BaseToken):
     pass
+
+class ImportToken(BaseToken):
+    pass
 # endregion

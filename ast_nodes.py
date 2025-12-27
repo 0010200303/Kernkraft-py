@@ -1,4 +1,5 @@
 import abc
+import typing
 from typing import Self
 from llvmlite import ir
 
@@ -67,8 +68,23 @@ class ExpressionsNode(TrackedNode):
             ret += child.__repr__(level + 1)
         return ret
 
-    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module, imports: typing.Dict[str, ir.Module] = {}) -> None:
         builder.comment(f"Expressions originating at {self.line}:{self.column}")
+
+        for _import in imports.values():
+            # import types
+            for type_name, type in _import.context.identified_types.items():
+                module.context.identified_types[type_name] = type
+                type_from_name_mapping[type_name] = type
+                name_from_type_mapping[type] = type_name
+
+            # import functions
+            for function_name, function in _import.globals.items():
+                if not isinstance(function, ir.Function) or function.linkage != "":
+                    continue
+
+                imported_function = ir.Function(module, function.function_type, name=function_name)
+                imported_function.linkage = "external"
 
         for child in self.children:
             child.generate_ir(builder, module)
@@ -87,6 +103,8 @@ class CallNode(TrackedNode):
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.CallInstr:
         func = module.globals.get(self.name)
+        if not func:
+            func = module.globals.get(module.module_name + "$" + self.name)
         if not func:
             raise ValueError(f"Function {self.name} not found")
 
@@ -124,6 +142,9 @@ class IdentifierNode(TrackedNode):
             return builder.load(ptr, name=".load:" + self.identifier)
         return ptr
 
+    def get_joined_name(self) -> str:
+        return self.identifier
+
 class AccessNode(TrackedNode):
     def __init__(self, identifier: ExpressionsNode, line: int, column: int):
         super().__init__(line, column)
@@ -134,16 +155,32 @@ class AccessNode(TrackedNode):
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         raise NotImplementedError("Only virtual method")
-    
+
     def get_base_identifier(self) -> IdentifierNode:
         current = self.identifier
         while isinstance(current, AccessNode):
             current = current.identifier
         return current
 
+    def get_joined_name(self) -> str:
+        if isinstance(self.identifier, AccessNode):
+            base = self.identifier.get_joined_name()
+        elif isinstance(self.identifier, IdentifierNode):
+            base = self.identifier.identifier
+        else:
+            base = self.get_base_identifier().identifier
+
+        if isinstance(self, MemberAccessNode):
+            return f"{base}${self.member}"
+
+        if isinstance(self, IndexAccessNode):
+            if isinstance(getattr(self, "index", None), IntegerLiteralNode):
+                return f"{base}$idx{self.index.value}"
+            return f"{base}$idx"
+        return base
+
     @abc.abstractmethod
     def generate_ptr(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
-        """Generate an lvalue pointer for assignments (must be storable)."""
         raise NotImplementedError("Only virtual method")
 
 class MemberAccessNode(AccessNode):
@@ -420,6 +457,8 @@ class AssignmentNode(TrackedNode):
             if self.typed is not None:
                 var_type = type_from_name_mapping.get(self.typed)
                 if var_type is None:
+                    var_type = type_from_name_mapping.get(module.name + "$" + self.typed)
+                if var_type is None:
                     raise ValueError(f"Unknown type {self.typed} for variable {self.identifier.identifier} at {self.line}:{self.column}")
 
                 if self.typed_arr_len is not None:
@@ -554,40 +593,49 @@ class StructNode(TrackedNode):
         return ret
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
-        if module.globals.get(self.name):
-            raise ValueError(f"Struct {self.name} already defined at {self.line}:{self.column}")
+        qualified_name = module.module_name + "$" + self.name
+        if module.globals.get(qualified_name):
+            raise ValueError(f"Struct {qualified_name} already defined at {self.line}:{self.column}")
 
         # Reuse any previously-created identified type (prevents duplicate %"Name" types).
         ctx = builder.module.context
-        struct_ty = ctx.identified_types.get(self.name)
+        struct_ty = ctx.identified_types.get(qualified_name)
         if struct_ty is None:
-            struct_ty = ctx.get_identified_type(self.name)
+            struct_ty = ctx.get_identified_type(qualified_name)
         else:
             if getattr(struct_ty, "is_opaque", False) is False and getattr(struct_ty, "elements", None):
-                raise ValueError(f"Struct {self.name} already defined at {self.line}:{self.column}")
+                raise ValueError(f"Struct {qualified_name} already defined at {self.line}:{self.column}")
 
-        type_from_name_mapping[self.name] = struct_ty
-        name_from_type_mapping[struct_ty] = self.name
+        type_from_name_mapping[qualified_name] = struct_ty
+        name_from_type_mapping[struct_ty] = qualified_name
 
         field_names = []
         field_types = []
         for field in self.fields:
+            qualified_field_type = module.module_name + "$" + field.typed
             if field.typed is None:
-                raise ValueError(f"Field {field.identifier.identifier} in struct {self.name} must have a type at {field.line}:{field.column}")
+                raise ValueError(f"Field {field.identifier.identifier} in struct {qualified_name} must have a type at {field.line}:{field.column}")
             elif field.value is not None:
-                raise ValueError(f"Field {field.identifier.identifier} in struct {self.name} cannot have an initial value at {field.line}:{field.column}")
+                raise ValueError(f"Field {field.identifier.identifier} in struct {qualified_name} cannot have an initial value at {field.line}:{field.column}")
 
-            # Allow self-referential member types by lowering to pointer-to-self.
-            if field.typed == self.name:
+            # Allow self-referential member types by lowering to pointer-to-self
+            if qualified_field_type == qualified_name:
                 field_type = ir.PointerType(struct_ty)
             else:
-                field_type = type_from_name_mapping.get(field.typed)
+                field_type = type_from_name_mapping.get(qualified_field_type)
 
+                if field_type:
+                    field_type = ir.PointerType(field_type)
+                else:
+                    field_type = type_from_name_mapping.get(field.typed)
+
+            if field_type is None:
+                field_type = type_from_name_mapping.get(qualified_field_type)
             if field_type is None:
                 raise ValueError(f"Unknown type '{field.typed}' for field {field.identifier.identifier} in struct {self.name} at {field.line}:{field.column}")
 
             if field_names.count(field.identifier.identifier) != 0:
-                raise ValueError(f"Duplicate field '{field.identifier.identifier}' in struct {self.name} at {field.line}:{field.column}")
+                raise ValueError(f"Duplicate field '{field.identifier.identifier}' in struct {qualified_name} at {field.line}:{field.column}")
 
             field_types.append(field_type)
             field_names.append(field.identifier.identifier)
@@ -595,9 +643,9 @@ class StructNode(TrackedNode):
         struct_ty.set_body(*field_types)
         struct_ty.field_names = field_names
 
-        # Keep mappings pointing at the same struct_ty instance (do NOT re-fetch it).
-        type_from_name_mapping[self.name] = struct_ty
-        name_from_type_mapping[struct_ty] = self.name
+        # Keep mappings pointing at the same struct_ty instance (do NOT re-fetch it)
+        type_from_name_mapping[qualified_name] = struct_ty
+        name_from_type_mapping[struct_ty] = qualified_name
 
 class FunctionNode(TrackedNode):
     def __init__(self, name: str, line: int, column: int):
@@ -621,15 +669,18 @@ class FunctionNode(TrackedNode):
         return ret
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
-        if module.globals.get(self.name):
-            raise ValueError(f"Function {self.name} already defined at {self.line}:{self.column}")
+        qualified_name = module.module_name + "$" + self.name
+        if module.globals.get(qualified_name):
+            raise ValueError(f"Function {qualified_name} already defined at {self.line}:{self.column}")
 
         params_types = []
         for param in self.params:
             if param.typed is None:
-                raise ValueError(f"Parameter {param.identifier.identifier} in function {self.name} must have a type at {param.line}:{param.column}")
+                raise ValueError(f"Parameter {param.identifier.identifier} in function {qualified_name} must have a type at {param.line}:{param.column}")
 
             param_type = type_from_name_mapping.get(param.typed)
+            if param_type is None:
+                param_type = type_from_name_mapping.get(module.module_name + "$" + param.typed)
             if param_type is None:
                 raise ValueError(f"Unknown type {param.typed} for parameter {param.identifier.identifier} in function {self.name} at {param.line}:{param.column}")
 
@@ -639,10 +690,10 @@ class FunctionNode(TrackedNode):
             params_types.append(param_type)
 
         func_type = ir.FunctionType(type_from_name_mapping.get(self.return_type, ir.VoidType()), params_types)
-        func = ir.Function(module, func_type, name=self.name)
+        func = ir.Function(module, func_type, name=qualified_name)
 
         if len(func.args) != len(self.params):
-            raise ValueError(f"Function {self.name} parameter count mismatch at {self.line}:{self.column}")
+            raise ValueError(f"Function {qualified_name} parameter count mismatch at {self.line}:{self.column}")
         for i, param in enumerate(self.params):
             func.args[i].name = param.identifier.identifier
 
@@ -770,11 +821,23 @@ class LenNode(TrackedNode):
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         operand_value = self.operand.generate_ir(builder, module)
 
-
         if not (isinstance(operand_value.type, ir.Aggregate) or isinstance(operand_value.allocated_type, ir.Aggregate)):
             raise TypeError(f"Length operand must be an aggregate at {self.line}:{self.column}")
 
         return ir.Constant(ir.IntType(32), 2)
+
+class ImportNode(TrackedNode):
+    def __init__(self, name_parts: list[str], line: int, column: int):
+        super().__init__(line, column)
+        self.name_parts = name_parts
+
+    def __repr__(self, level: int = 0) -> str:
+        ret = "\t" * level
+        ret += f"ImportNode({'.'.join(self.name_parts)}) at {self.line}:{self.column}\n"
+        return ret
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
+        pass
 # endregion
 
 # region operators

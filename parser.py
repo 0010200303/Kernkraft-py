@@ -56,6 +56,11 @@ class Parser:
                 raise Exception(f"Invalid assignment target at {self.current_token_pos()}: {expression}")
 
             return self.parse_assignment(expression)
+        elif self.check(OpenParenthesisToken):
+            if not isinstance(expression, (IdentifierNode | AccessNode)):
+                raise Exception(f"Invalid call target at {self.current_token_pos()}: {expression}")
+            
+            return self.parse_call(expression)
 
         return expression
 
@@ -94,8 +99,6 @@ class Parser:
             return self.parse_integer_literal()
 # endregion
         elif self.check(IdentifierToken):
-            if self.check(OpenParenthesisToken, 1):
-                return self.parse_call()
             return self.parse_identifier()
 # region keywords
         elif self.check(StructToken):
@@ -112,6 +115,8 @@ class Parser:
             return self.parse_while()
         elif self.check(LenToken):
             return self.parse_len()
+        elif self.check(ImportToken):
+            return self.parse_import()
 # endregion
         else:
             raise Exception(f"Unexpected token in expression: {self.current_token}")
@@ -209,9 +214,8 @@ class Parser:
         token = self.consume(IntegerLiteralToken, f"Expected integer literal but got {self.current_token}")
         return IntegerLiteralNode(token.value, token.line, token.column)
     
-    def parse_call(self) -> CallNode:
-        token = self.consume(IdentifierToken, f"Expected function name but got {self.current_token}")
-        call_node = CallNode(token.identifier, token.line, token.column)
+    def parse_call(self, identifier_node: IdentifierNode | AccessNode) -> CallNode:
+        call_node = CallNode(identifier_node.get_joined_name(), identifier_node.line, identifier_node.column)
         self.consume(OpenParenthesisToken, f"Expected '(' after function name but got {self.current_token}")
 
         while self.check(CloseParenthesisToken) is False:
@@ -236,8 +240,7 @@ class Parser:
         typed_arr_len = None
         if self.check(ColonToken):
             self.advance()
-            type_token = self.consume(IdentifierToken, f"Expected type identifier after ':' but got {self.current_token}")
-            typed = type_token.identifier
+            typed = self.parse_qualified_name()
 
             if self.check(OpenBracketToken):
                 self.advance()
@@ -259,37 +262,6 @@ class Parser:
     def parse_identifier(self) -> IdentifierNode | AssignmentNode:
         token = self.consume(IdentifierToken, f"Expected identifier at {self.current_token_pos()} but got {self.current_token}")
         return IdentifierNode(token.identifier, token.line, token.column)
-
-        # fields: list[str | int | IdentifierNode] = []
-
-        # while self.check(DotToken) or self.check(OpenBracketToken):
-        #     if self.check(DotToken):
-        #         self.advance()
-        #         field_token = self.consume(IdentifierToken, f"Expected field name after '.' but got {self.current_token}")
-        #         fields.append(field_token.identifier)
-        #     elif self.check(OpenBracketToken):
-        #         self.advance()
-
-        #         if self.check(IntegerLiteralToken):
-        #             index_token = self.consume(IntegerLiteralToken, f"Expected array index integer literal after '[' but got {self.current_token}")
-        #             fields.append(index_token.value)
-        #         elif self.check(IdentifierToken):
-        #             index_token = self.consume(IdentifierToken, f"Expected array index identifier after '[' but got {self.current_token}")
-        #             fields.append(IdentifierNode(index_token.identifier, index_token.line, index_token.column))
-
-        #         self.consume(CloseBracketToken, f"Expected ']' after array index but got {self.current_token}")
-
-        # identifier_node = IdentifierNode(token.identifier, token.line, token.column, fields)
-
-        # if self.check(AssignmentToken):
-        #     return self.parse_assignment(identifier_node)
-        # elif self.check(ColonToken):
-        #     # dirty hack to fix if statement colon seen as type annotation
-        #     if self.check(EndOfLineToken, 1) is False:
-        #         if fields:
-        #             raise Exception(f"Cannot assign to field access {token.identifier}.{'.'.join(fields)} at {self.current_token_pos()}")
-        #         return self.parse_assignment(identifier_node)
-        # return identifier_node
 
     def parse_struct(self) -> StructNode:
         token = self.consume(StructToken, f"Expected 'struct' keyword but got {self.current_token}")
@@ -342,8 +314,7 @@ class Parser:
 
         if self.check(ArrowToken):
             self.advance()
-            return_type_token = self.consume(IdentifierToken, f"Expected return type identifier after '->' but got {self.current_token}")
-            function_node.return_type = return_type_token.identifier
+            function_node.return_type = self.parse_qualified_name()
 
         self.consume(ColonToken, f"Expected ':' after function declaration but got {self.current_token}")
         self.consume(EndOfLineToken, f"Expected end of line after function declaration but got {self.current_token}")
@@ -432,12 +403,12 @@ class Parser:
         return elif_node
 
     def parse_while(self) -> WhileNode:
-        token = self.consume(WhileToken, f"Expected 'while' keyword but got {self.current_token}")
+        token = self.consume(WhileToken, f"Expected 'while' keyword but got '{self.current_token}'")
         condition = self.parse_expression()
 
-        self.consume(ColonToken, f"Expected ':' after while condition but got {self.current_token}")
-        self.consume(EndOfLineToken, f"Expected end of line after while condition but got {self.current_token}")
-        self.consume(IndentToken, f"Expected indentation after while condition but got {self.current_token}")
+        self.consume(ColonToken, f"Expected ':' after while condition but got '{self.current_token}'")
+        self.consume(EndOfLineToken, f"Expected end of line after while condition but got '{self.current_token}'")
+        self.consume(IndentToken, f"Expected indentation after while condition but got '{self.current_token}'")
 
         while_node = WhileNode(condition, token.line, token.column)
 
@@ -447,16 +418,33 @@ class Parser:
                 continue
 
             while_node.body.append(self.parse_statement())
-        self.consume(DedentToken, f"Expected dedentation after while body but got {self.current_token}")
+        self.consume(DedentToken, f"Expected dedentation after while body but got '{self.current_token}'")
 
         return while_node
 
     def parse_len(self) -> LenNode:
-        token = self.consume(LenToken, f"Expected 'len' keyword but got {self.current_token}")
-        self.consume(OpenParenthesisToken, f"Expected '(' after 'len' but got {self.current_token}")
+        token = self.consume(LenToken, f"Expected 'len' keyword but got '{self.current_token}'")
+        self.consume(OpenParenthesisToken, f"Expected '(' after 'len' but got '{self.current_token}'")
         expr = self.parse_statement()
-        self.consume(CloseParenthesisToken, f"Expected ')' after expression in 'len' but got {self.current_token}")
+        self.consume(CloseParenthesisToken, f"Expected ')' after expression in 'len' but got '{self.current_token}'")
         return LenNode(expr, token.line, token.column)
+
+    def parse_import(self) -> ImportNode:
+        token = self.consume(ImportToken, f"Exspected 'import' keyword but got '{self.current_token}'")
+        identifier = self.parse_qualified_name()
+        self.consume(EndOfLineToken, f"Expected dedentation after while body but got '{self.current_token}'")
+        return ImportNode(identifier, token.line, token.column)
+
+    def parse_qualified_name(self) -> str:
+        first = self.consume(IdentifierToken, f"Expected identifier at {self.current_token_pos()} but got {self.current_token}")
+        parts = [first.identifier]
+
+        while self.check(DotToken):
+            self.advance()
+            nxt = self.consume(IdentifierToken, f"Expected identifier after '.' at {self.current_token_pos()} but got {self.current_token}")
+            parts.append(nxt.identifier)
+
+        return "$".join(parts)
 
     def parse(self) -> ExpressionsNode:
         root = ExpressionsNode(0, 0)

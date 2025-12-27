@@ -10,6 +10,7 @@ class Lexer:
         "elif": ElifToken,
         "while": WhileToken,
         "len": LenToken,
+        "import": ImportToken,
     }
 
     def __init__(self, data: str):
