@@ -2,10 +2,9 @@ import os
 from lexer import Lexer
 from parser import Parser
 from ir_gen import IR_Generator
-from llvmlite import ir
 
-MAIN = "tust"
-MODULES = ["LinkedList"]
+MAIN = "tust10"
+MODULES = []
 
 def print_tokens(tokens: list) -> None:
     for token in tokens:

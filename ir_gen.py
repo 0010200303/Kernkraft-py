@@ -1,4 +1,5 @@
 import typing
+import sys
 from llvmlite import ir
 from ast_nodes import *
 
@@ -12,6 +13,10 @@ malloc_type = ir.FunctionType(ir.PointerType(i8), [i32])
 free_type = ir.FunctionType(ir.VoidType(), [ir.PointerType(i8)])
 calloc_type = ir.FunctionType(ir.PointerType(i8), [i32, i32])
 realloc_type = ir.FunctionType(ir.PointerType(i8), [ir.PointerType(i8), i32])
+open_type = ir.FunctionType(i32, [ir.PointerType(i8), i32, i32])
+read_type = ir.FunctionType(i32, [i32, ir.PointerType(i8), i32])
+write_type = ir.FunctionType(i32, [i32, ir.PointerType(i8), i32])
+close_type = ir.FunctionType(i32, [i32])
 
 class IR_Generator:
     def __init__(
@@ -42,6 +47,44 @@ class IR_Generator:
             ir.Function(module, calloc_type, name="calloc").linkage = "external"
         if "realloc" not in module.globals:
             ir.Function(module, realloc_type, name="realloc").linkage = "external"
+        if "open" not in module.globals:
+            ir.Function(module, open_type, name="open").linkage = "external"
+        if "read" not in module.globals:
+            ir.Function(module, read_type, name="read").linkage = "external"
+        if "write" not in module.globals:
+            ir.Function(module, write_type, name="write").linkage = "external"
+        if "close" not in module.globals:
+            ir.Function(module, close_type, name="close").linkage = "external"
+
+        if "errno_ptr" not in module.globals:
+            errno_loc_ty = ir.FunctionType(ir.PointerType(i32), [])
+            if "__errno_location" not in module.globals:
+                ir.Function(module, errno_loc_ty, name="__errno_location").linkage = "external"
+
+            fn = ir.Function(module, ir.FunctionType(ir.PointerType(i32), []), name="errno_ptr")
+            fn.linkage = "internal"
+            b = ir.IRBuilder(fn.append_basic_block("entry"))
+            p = b.call(module.globals["__errno_location"], [])
+            b.ret(p)
+
+        if "get_errno" not in module.globals:
+            fn = ir.Function(module, ir.FunctionType(i32, []), name="get_errno")
+            fn.linkage = "internal"
+            b = ir.IRBuilder(fn.append_basic_block("entry"))
+            p = b.call(module.globals["errno_ptr"], [])
+            v = b.load(p)
+            b.ret(v)
+
+        if "array128_i8_to_ptr" not in module.globals:
+            arr128_ty = ir.ArrayType(i8, 128)
+            fn_ty = ir.FunctionType(ir.PointerType(i8), [ir.PointerType(arr128_ty)])
+            fn = ir.Function(module, fn_ty, name="array128_i8_to_ptr")
+            fn.linkage = "internal"
+            block = fn.append_basic_block("entry")
+            b = ir.IRBuilder(block)
+            zero = ir.Constant(i32, 0)
+            p0 = b.gep(fn.args[0], [zero, zero], inbounds=True)
+            b.ret(p0)
 
     def create_builder(
         self,
