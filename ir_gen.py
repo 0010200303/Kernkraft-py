@@ -75,17 +75,6 @@ class IR_Generator:
             v = b.load(p)
             b.ret(v)
 
-        if "array128_i8_to_ptr" not in module.globals:
-            arr128_ty = ir.ArrayType(i8, 128)
-            fn_ty = ir.FunctionType(ir.PointerType(i8), [ir.PointerType(arr128_ty)])
-            fn = ir.Function(module, fn_ty, name="array128_i8_to_ptr")
-            fn.linkage = "internal"
-            block = fn.append_basic_block("entry")
-            b = ir.IRBuilder(block)
-            zero = ir.Constant(i32, 0)
-            p0 = b.gep(fn.args[0], [zero, zero], inbounds=True)
-            b.ret(p0)
-
     def create_builder(
         self,
         module: ir.Module,

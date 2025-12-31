@@ -16,7 +16,7 @@ if fd == -1:
     printf("error while opening file: %d", get_errno())
     return 0
 
-write(fd, array128_i8_to_ptr(buffer), 11)
+write(fd, buffer, 11)
 
 close_err = close(fd)
 if close_err < 0:

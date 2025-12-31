@@ -101,6 +101,25 @@ class CallNode(TrackedNode):
             ret += arg.__repr__(level + 1)
         return ret
 
+    def coerce_call_arg(self,
+                        builder: ir.IRBuilder,
+                        value: ir.Value,
+                        exspected_ty: ir.Type,
+                        arg_index: int) -> ir.Value:
+        if value.type == exspected_ty:
+            return value
+
+        # array to pointer decay
+        if isinstance(exspected_ty, ir.PointerType) and isinstance(value.type, ir.PointerType):
+            if isinstance(value.type.pointee, ir.ArrayType) and value.type.pointee.element == exspected_ty.pointee:
+                i32 = ir.IntType(32)
+                zero = ir.Constant(i32, 0)
+                return builder.gep(value, [zero, zero], inbounds=True, name=f".decay.arg.{arg_index}")
+
+        exp = name_from_type_mapping.get(exspected_ty, str(exspected_ty))
+        got = name_from_type_mapping.get(value.type, str(value.type))
+        raise TypeError(f"Call arg {arg_index} type mismatch at {self.line}:{self.column}: expected {exp}, got {got}")
+
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.CallInstr:
         func = module.globals.get(self.name)
         if not func:
@@ -108,10 +127,20 @@ class CallNode(TrackedNode):
         if not func:
             raise ValueError(f"Function {self.name} not found")
 
-        args = []
-        for arg in self.args:
-            args.append(arg.generate_ir(builder, module))
+        func_ty = func.function_type
+        fixed_param_tys = list(func_ty.args)
 
+        if (not func_ty.var_arg) and (len(self.args) != len(fixed_param_tys)):
+            raise ValueError(f"Function {self.name} expects {len(fixed_param_tys)} args, got {len(self.args)} at {self.line}:{self.column}")
+        if len(self.args) < len(fixed_param_tys):
+            raise ValueError(f"Function {self.name} expects at least {len(fixed_param_tys)} args, got {len(self.args)} at {self.line}:{self.column}")
+        
+        args: list[ir.Value] = []
+        for idx, arg_node in enumerate(self.args):
+            value = arg_node.generate_ir(builder, module)
+            if idx < len(fixed_param_tys):
+                value = self.coerce_call_arg(builder, value, fixed_param_tys[idx], idx)
+            args.append(value)
         return builder.call(func, args, name=".call:" + self.name)
 
 class IdentifierNode(TrackedNode):

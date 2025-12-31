@@ -5,7 +5,7 @@ if fd == -1:
     printf("error while opening file: %d", get_errno())
     return 0
 
-size = read(fd, array128_i8_to_ptr(buffer), 128)
+size = read(fd, buffer, 128)
 
 pos: i32 = 0
 while pos < size:
