@@ -1,29 +1,37 @@
 import abc
 import typing
-from typing import Self
 from llvmlite import ir
 
+i8 = ir.IntType(8)
+i32 = ir.IntType(32)
+i8p = ir.PointerType(i8)
+
+ZERO = ir.Constant(i32, 0)
+ONE = ir.Constant(i32, 1)
+TWO = ir.Constant(i32, 2)
+
 type_from_name_mapping = {
-    "i32": ir.IntType(32),
-    "str": ir.PointerType(ir.IntType(8)),
+    "i32": i32,
+    "str": i8p,
     "bool": ir.IntType(1),
     "void": ir.VoidType(),
-    "char": ir.IntType(8),
-    "i8": ir.IntType(8),
+    "char": i8,
+    "i8": i8,
 }
 
 name_from_type_mapping = {
-    ir.IntType(32): "i32",
-    ir.PointerType(ir.IntType(8)): "str",
+    i32: "i32",
+    i8p: "str",
     ir.IntType(1): "i1/bool",
     ir.VoidType(): "void",
-    ir.IntType(8): "i8/char",
+    i8: "i8/char",
 }
 
 reserved_types = set(type_from_name_mapping.keys())
 
 reserved_keywords = {
     "struct",
+    "union",
     "func",
     "len",
 }
@@ -39,6 +47,11 @@ def _mangle_type_for_symbol(ty: ir.Type) -> str:
     for ch in s:
         out.append(ch if ch.isalnum() else "_")
     return "".join(out)
+
+def _sizeof_as_i32(builder: ir.IRBuilder, element_type: ir.Type) -> ir.Value:
+    null_tptr = ir.Constant(ir.PointerType(element_type), None)
+    one_past = builder.gep(null_tptr, [ONE], name=".sizeof.gep")
+    return builder.ptrtoint(one_past, i32, name=".sizeof")
 
 class ASTNode(abc.ABC):
     _type: ir.Type = None
@@ -112,9 +125,7 @@ class CallNode(TrackedNode):
         # array to pointer decay
         if isinstance(exspected_ty, ir.PointerType) and isinstance(value.type, ir.PointerType):
             if isinstance(value.type.pointee, ir.ArrayType) and value.type.pointee.element == exspected_ty.pointee:
-                i32 = ir.IntType(32)
-                zero = ir.Constant(i32, 0)
-                return builder.gep(value, [zero, zero], inbounds=True, name=f".decay.arg.{arg_index}")
+                return builder.gep(value, [ZERO, ZERO], inbounds=True, name=f".decay.arg.{arg_index}")
 
         exp = name_from_type_mapping.get(exspected_ty, str(exspected_ty))
         got = name_from_type_mapping.get(value.type, str(value.type))
@@ -212,6 +223,9 @@ class AccessNode(TrackedNode):
     def generate_ptr(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         raise NotImplementedError("Only virtual method")
 
+    def generate_ptr_store(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        return self.generate_ptr(builder, module)
+
 class MemberAccessNode(AccessNode):
     def __init__(self, identifier: ExpressionsNode, member: str, line: int, column: int):
         super().__init__(identifier, line, column)
@@ -229,6 +243,20 @@ class MemberAccessNode(AccessNode):
         base_ptr = base_val
 
         struct_ty = base_ptr.type.pointee
+
+        # union access
+        if getattr(struct_ty, "is_union", False):
+            idx_map = getattr(struct_ty, "union_variant_index", {})
+            if self.member not in idx_map:
+                raise ValueError(f"Unknown union variant '{self.member}' at {self.line}:{self.column}")
+            
+            variant_i = idx_map[self.member]
+            variant_ty = struct_ty.union_variant_types[variant_i]
+
+            payload_ptr_ptr = builder.gep(base_ptr, [ZERO, ONE], name=".ptr.union.payload")
+            payload_i8p = builder.load(payload_ptr_ptr, name=".load.union.payload")
+            return builder.bitcast(payload_i8p, ir.PointerType(variant_ty), name=".ptr.union.variant." + self.member)
+
         if not isinstance(struct_ty, ir.Aggregate):
             raise TypeError(f"Member access base must point to an aggregate at {self.line}:{self.column}")
 
@@ -237,11 +265,35 @@ class MemberAccessNode(AccessNode):
             raise ValueError(f"Unknown field '{self.member}' at {self.line}:{self.column}")
 
         field_index = field_names.index(self.member)
-        return builder.gep(
-            base_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
-            name=".ptr.memberaccess:" + self.member,
-        )
+        return builder.gep(base_ptr, [ZERO, ir.Constant(i32, field_index)], name=".ptr.memberaccess:" + self.member)
+
+    def generate_ptr_store(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        base_value = self.identifier.generate_ir(builder, module)
+        if not isinstance(base_value.type, ir.PointerType):
+            raise TypeError(f"Member access base must be a pointer at {self.line}:{self.column}")
+        base_ptr = base_value
+        union_ty = base_ptr.type.pointee
+
+        if not getattr(union_ty, "is_union", False):
+            return self.generate_ptr(builder, module)
+
+        idx_map = getattr(union_ty, "union_variant_index", {})
+        if self.member not in idx_map:
+            raise ValueError(f"Unknown union variant '{self.member}' at {self.line}:{self.column}")
+
+        variant_i = idx_map[self.member]
+        variant_ty = union_ty.union_variant_types[variant_i]
+
+        tag_ptr = builder.gep(base_ptr, [ZERO, ZERO], name=".ptr.union.tag")
+        payload_ptr_ptr = builder.gep(base_ptr, [ZERO, ONE], name=".ptr.union.payload")
+
+        nbytes = _sizeof_as_i32(builder, variant_ty)
+        raw = builder.call(module.globals["malloc"], [nbytes], name=".call.union.malloc")
+
+        builder.store(ir.Constant(i32, variant_i), tag_ptr)
+        builder.store(raw, payload_ptr_ptr)
+
+        return builder.bitcast(raw, ir.PointerType(variant_ty), name=".ptr.union.variant.store." + self.member)
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         ptr = self.generate_ptr(builder, module)
@@ -268,8 +320,8 @@ class IndexAccessNode(AccessNode):
         if idx_val.type.width == 32:
             return idx_val
         if idx_val.type.width < 32:
-            return builder.zext(idx_val, ir.IntType(32), name=".zext.idx")
-        return builder.trunc(idx_val, ir.IntType(32), name=".trunc.idx")
+            return builder.zext(idx_val, i32, name=".zext.idx")
+        return builder.trunc(idx_val, i32, name=".trunc.idx")
 
     def generate_ptr(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         base_val = self.identifier.generate_ir(builder, module)
@@ -282,19 +334,11 @@ class IndexAccessNode(AccessNode):
 
         # Static array: [N x T]*
         if isinstance(pointee, ir.ArrayType):
-            return builder.gep(
-                base_val,
-                [ir.Constant(ir.IntType(32), 0), idx_val],
-                name=".ptr.index",
-            )
+            return builder.gep(base_val, [ZERO, idx_val], name=".ptr.index")
 
         # Dynamic array: array.T* where body is { T*, i32, i32 } and element pointer is field 0.
         if isinstance(pointee, ir.IdentifiedStructType) and (pointee.name or "").startswith("array."):
-            data_ptr_ptr = builder.gep(
-                base_val,
-                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
-                name=".ptr.array.data",
-            )
+            data_ptr_ptr = builder.gep(base_val, [ZERO, ZERO], name=".ptr.array.data")
             data_ptr = builder.load(data_ptr_ptr, name=".load.array.data")
             return builder.gep(data_ptr, [idx_val], name=".ptr.index")
 
@@ -327,13 +371,6 @@ class AssignmentNode(TrackedNode):
         ret += self.identifier.__repr__(level + 1)
         return ret
 
-    def _sizeof_as_i32(self, builder: ir.IRBuilder, element_type: ir.Type) -> ir.Value:
-        # sizeof(T) = ptrtoint(gep(T* null, 1))  (target-independent in IR)
-        i32 = ir.IntType(32)
-        null_tptr = ir.Constant(ir.PointerType(element_type), None)
-        one_past = builder.gep(null_tptr, [ir.Constant(i32, 1)], name=".sizeof.gep")
-        return builder.ptrtoint(one_past, i32, name=".sizeof")
-
     def _ensure_dynamic_array_append_function(
         self,
         builder: ir.IRBuilder,
@@ -352,10 +389,6 @@ class AssignmentNode(TrackedNode):
 
         realloc_fn = module.globals["realloc"]
 
-        i8 = ir.IntType(8)
-        i8p = ir.PointerType(i8)
-        i32 = ir.IntType(32)
-
         arr_ptr_ty = ir.PointerType(array_ty)
         fn_ty = ir.FunctionType(ir.VoidType(), [arr_ptr_ty, element_type])
         fn = ir.Function(module, fn_ty, name=fn_name)
@@ -371,9 +404,9 @@ class AssignmentNode(TrackedNode):
         b = ir.IRBuilder(entry)
 
         # Field pointers: { T*, i32, i32 } => data,len,cap
-        data_ptr_ptr = b.gep(arr_arg, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name=".ptr.data")
-        len_ptr = b.gep(arr_arg, [ir.Constant(i32, 0), ir.Constant(i32, 1)], name=".ptr.len")
-        cap_ptr = b.gep(arr_arg, [ir.Constant(i32, 0), ir.Constant(i32, 2)], name=".ptr.cap")
+        data_ptr_ptr = b.gep(arr_arg, [ZERO, ZERO], name=".ptr.data")
+        len_ptr = b.gep(arr_arg, [ZERO, ONE], name=".ptr.len")
+        cap_ptr = b.gep(arr_arg, [ZERO, TWO], name=".ptr.cap")
 
         data_ptr = b.load(data_ptr_ptr, name=".load.data")
         length = b.load(len_ptr, name=".load.len")
@@ -384,11 +417,11 @@ class AssignmentNode(TrackedNode):
 
         # grow:
         b.position_at_start(grow_bb)
-        cap_is_zero = b.icmp_signed("==", cap, ir.Constant(i32, 0), name=".cmp.cap0")
-        cap_dbl = b.mul(cap, ir.Constant(i32, 2), name=".cap.dbl")
-        new_cap = b.select(cap_is_zero, ir.Constant(i32, 1), cap_dbl, name=".cap.new")
+        cap_is_zero = b.icmp_signed("==", cap, ZERO, name=".cmp.cap0")
+        cap_dbl = b.mul(cap, TWO, name=".cap.dbl")
+        new_cap = b.select(cap_is_zero, ONE, cap_dbl, name=".cap.new")
 
-        sizeof_t = self._sizeof_as_i32(b, element_type)
+        sizeof_t = _sizeof_as_i32(b, element_type)
         new_cap_i32 = b.zext(new_cap, i32, name=".zext.newcap")
         nbytes = b.mul(new_cap_i32, sizeof_t, name=".mul.nbytes")
 
@@ -408,7 +441,7 @@ class AssignmentNode(TrackedNode):
         elem_ptr = b.gep(data_ptr2, [length2], name=".ptr.elem")
         b.store(elem_arg, elem_ptr)
 
-        new_len = b.add(length2, ir.Constant(i32, 1), name=".len.inc")
+        new_len = b.add(length2, ONE, name=".len.inc")
         b.store(new_len, len_ptr)
         b.ret_void()
 
@@ -424,7 +457,6 @@ class AssignmentNode(TrackedNode):
         if module.globals.get(fn_name):
             return
 
-        i32 = ir.IntType(32)
         arr_ptr_ty = ir.PointerType(array_ty)
         fn_ty = ir.FunctionType(ir.VoidType(), [arr_ptr_ty])
         fn = ir.Function(module, fn_ty, name=fn_name)
@@ -435,13 +467,13 @@ class AssignmentNode(TrackedNode):
         b = ir.IRBuilder(entry)
 
         # { T*, i32, i32 } => data,len,cap
-        data_ptr_ptr = b.gep(arr_arg, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name=".arr.ptr.data")
-        len_ptr = b.gep(arr_arg, [ir.Constant(i32, 0), ir.Constant(i32, 1)], name=".arr.ptr.len")
-        cap_ptr = b.gep(arr_arg, [ir.Constant(i32, 0), ir.Constant(i32, 2)], name=".arr.ptr.cap")
+        data_ptr_ptr = b.gep(arr_arg, [ZERO, ZERO], name=".arr.ptr.data")
+        len_ptr = b.gep(arr_arg, [ZERO, ONE], name=".arr.ptr.len")
+        cap_ptr = b.gep(arr_arg, [ZERO, TWO], name=".arr.ptr.cap")
 
         b.store(ir.Constant(ir.PointerType(element_type), None), data_ptr_ptr)
-        b.store(ir.Constant(i32, 0), len_ptr)
-        b.store(ir.Constant(i32, 0), cap_ptr)
+        b.store(ZERO, len_ptr)
+        b.store(ZERO, cap_ptr)
         b.ret_void()
 
     def generate_dynamic_array_type(self, builder: ir.IRBuilder, element_type: ir.Type) -> ir.LiteralStructType:
@@ -453,8 +485,8 @@ class AssignmentNode(TrackedNode):
             return val
 
         data_ptr_type = ir.PointerType(element_type)
-        length_type = ir.IntType(32)
-        cap_type = ir.IntType(32)
+        length_type = i32
+        cap_type = i32
 
         val = builder.module.context.get_identified_type("array." + str(element_type))
         val.set_body(data_ptr_type, length_type, cap_type)
@@ -516,6 +548,15 @@ class AssignmentNode(TrackedNode):
 
             builder.position_at_start(builder.block)
             ptr = builder.alloca(var_type, name=self.identifier.identifier)
+            
+            # default-init unions: { tag=-1, payload=null }
+            if value is None and getattr(var_type, "is_union", False):
+                tag_ptr = builder.gep(ptr, [ZERO, ZERO], name=".ptr.union.tag")
+                payload_ptr = builder.gep(ptr, [ZERO, ONE], name="ptr.union.payload")
+
+                builder.store(ir.Constant(i32, -1), tag_ptr)
+                builder.store(ir.Constant(i8p, None), payload_ptr)
+            
             builder.position_at_end(builder.block)
 
             module.symbol_table[self.identifier.identifier] = ptr
@@ -538,7 +579,7 @@ class AssignmentNode(TrackedNode):
         else:
             # store only (supports member access lvalues)
             if isinstance(self.identifier, AccessNode):
-                dst_ptr = self.identifier.generate_ptr(builder, module)
+                dst_ptr = self.identifier.generate_ptr_store(builder, module)
             else:
                 dst_ptr = module.symbol_table.get(self.identifier.identifier)
                 if dst_ptr is None:
@@ -570,7 +611,7 @@ class AssignmentNode(TrackedNode):
 class StringLiteralNode(TrackedNode):
     def __init__(self, value: str, line: int, column: int):
         super().__init__(line, column)
-        self._type = ir.PointerType(ir.IntType(8))
+        self._type = ir.PointerType(i8)
         self.value = value
 
     def __repr__(self, level: int = 0) -> str:
@@ -584,21 +625,21 @@ class StringLiteralNode(TrackedNode):
 
         byte_arr = bytes(self.value, "utf8").decode("unicode_escape").encode("utf8") + b"\00"
 
-        c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(byte_arr)), bytearray(byte_arr))
+        c_str = ir.Constant(ir.ArrayType(i8, len(byte_arr)), bytearray(byte_arr))
         global_str = ir.GlobalVariable(module, c_str.type, name=name)
         global_str.linkage = "private"
         global_str.global_constant = True
         global_str.unnamed_addr = True
         global_str.initializer = c_str
 
-        str_ptr = builder.gep(global_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], name=".ptr" + name)
+        str_ptr = builder.gep(global_str, [ZERO, ZERO], name=".ptr" + name)
 
         return str_ptr
 
 class IntegerLiteralNode(TrackedNode):
     def __init__(self, value: int, line: int, column: int):
         super().__init__(line, column)
-        self._type = ir.IntType(32)
+        self._type = i32
         self.value = value
 
     def __repr__(self, level: int = 0) -> str:
@@ -675,6 +716,67 @@ class StructNode(TrackedNode):
         # Keep mappings pointing at the same struct_ty instance (do NOT re-fetch it)
         type_from_name_mapping[qualified_name] = struct_ty
         name_from_type_mapping[struct_ty] = qualified_name
+
+class UnionNode(TrackedNode):
+    def __init__(self, name: str, line: int, column: int):
+        super().__init__(line, column)
+        self.name = name
+        self.fields: list[AssignmentNode] = []
+
+    def __repr__(self, level: int = 0) -> str:
+        ret = "\t" * level + f'UnionNode({self.name}) at {self.line}:{self.column}\n'
+        for field in self.fields:
+            ret += field.__repr__(level + 1)
+        return ret
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
+        qualified_name = module.module_name + "$" + self.name
+
+        ctx = builder.module.context
+        union_ty = ctx.identified_types.get(qualified_name)
+        if union_ty is None:
+            union_ty = ctx.get_identified_type(qualified_name)
+        else:
+            if getattr(union_ty, "is_opaque", False) is False and getattr(union_ty, "elements", None):
+                raise ValueError(f"Union {qualified_name} already defined at {self.line}:{self.column}")
+
+        type_from_name_mapping[qualified_name] = union_ty
+        name_from_type_mapping[union_ty] = qualified_name
+
+        variant_names: list[str] = []
+        variant_types: list[ir.Type] = []
+
+        for field in self.fields:
+            if field.typed is None:
+                raise ValueError(f"Variant {field.identifier.identifier} in union {qualified_name} must have a type at {field.line}:{field.column}")
+            if field.value is not None:
+                raise ValueError(f"Variant {field.identifier.identifier} in union {qualified_name} cannot have an initial value at {field.line}:{field.column}")
+
+            ty = type_from_name_mapping.get(field.typed)
+            if ty is None:
+                ty = type_from_name_mapping.get(module.module_name + "$" + field.typed)
+            if ty is None:
+                raise ValueError(f"Unknown type '{field.type}' for variant {field.identifier.identifier} in union {qualified_name} at {field.line}:{field.column}")
+
+            if isinstance(ty, ir.Aggregate):
+                ty = ir.PointerType(ty)
+
+            if field.identifier.identifier in variant_names:
+                raise ValueError(f"Duplicate variant '{field.identifier.identifier}' in union {qualified_name} at {field.line}:{field.column}")
+            
+            variant_names.append(field.identifier.identifier)
+            variant_types.append(ty)
+
+        union_ty.set_body(i32, i8p)
+        union_ty.field_names = ["tag", "payload"]
+
+        union_ty.is_union = True
+        union_ty.union_variant_names = variant_names
+        union_ty.union_variant_types = variant_types
+        union_ty.union_variant_index = {name: i for i, name in enumerate(variant_names)}
+
+        type_from_name_mapping[qualified_name] = union_ty
+        name_from_type_mapping[union_ty] = qualified_name
 
 class FunctionNode(TrackedNode):
     def __init__(self, name: str, line: int, column: int):
@@ -853,7 +955,8 @@ class LenNode(TrackedNode):
         if not (isinstance(operand_value.type, ir.Aggregate) or isinstance(operand_value.allocated_type, ir.Aggregate)):
             raise TypeError(f"Length operand must be an aggregate at {self.line}:{self.column}")
 
-        return ir.Constant(ir.IntType(32), 2)
+        # TODO: what is this?!
+        return ir.Constant(i32, 2)
 
 class ImportNode(TrackedNode):
     def __init__(self, name_parts: list[str], line: int, column: int):

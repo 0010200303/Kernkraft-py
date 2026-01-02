@@ -3,7 +3,7 @@ from lexer import Lexer
 from parser import Parser
 from ir_gen import IR_Generator
 
-MAIN = "tust10"
+MAIN = "tust11"
 MODULES = []
 
 def print_tokens(tokens: list) -> None:

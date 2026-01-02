@@ -103,6 +103,8 @@ class Parser:
 # region keywords
         elif self.check(StructToken):
             return self.parse_struct()
+        elif self.check(UnionToken):
+            return self.parse_union()
         elif self.check(FuncToken):
             return self.parse_function()
         elif self.check(ReturnToken):
@@ -284,6 +286,28 @@ class Parser:
         self.consume(DedentToken, f"Expected dedentation after struct body but got {self.current_token}")
 
         return struct_node
+
+    def parse_union(self) -> UnionNode:
+        token = self.consume(UnionToken, f"Expected 'union' keyword but got {self.current_token}")
+        name_token = self.consume(IdentifierToken, f"Expected union name but got {self.current_token}")
+        self.consume(ColonToken, f"Expected ':' after union name but got {self.current_token}")
+        self.consume(EndOfLineToken, f"Expected end of line after union declaration but got {self.current_token}")
+        self.consume(IndentToken, f"Expected indentation after union declaration but got {self.current_token}")
+
+        union_node = UnionNode(name_token.identifier, token.line, token.column)
+
+        while self.check(DedentToken) is False:
+            if self.check(EndOfLineToken):
+                self.advance()
+                continue
+
+            field_node = self.parse_statement()
+            if not isinstance(field_node, AssignmentNode):
+                raise Exception(f"Expected field assignment in union body but got {field_node}")
+            union_node.fields.append(field_node)
+        
+        self.consume(DedentToken, f"Expected dedentation after union body but got {self.current_token}")
+        return union_node
 
     def parse_function(self) -> FunctionNode:
         token = self.consume(FuncToken, f"Expected 'func' keyword but got {self.current_token}")

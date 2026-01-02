@@ -3,6 +3,7 @@ from tokens import *
 class Lexer:
     RESERVED_KEYWORDS = {
         "struct": StructToken,
+        "union": UnionToken,
         "func": FuncToken,
         "return": ReturnToken,
         "if": IfToken,

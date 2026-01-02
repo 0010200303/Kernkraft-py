@@ -116,6 +116,9 @@ class GreaterOrEqualToken(BaseToken):
 class StructToken(BaseToken):
     pass
 
+class UnionToken(BaseToken):
+    pass
+
 class FuncToken(BaseToken):
     pass
 
