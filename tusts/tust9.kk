@@ -6,11 +6,9 @@ if fd == -1:
     return 0
 
 size = read(fd, buffer, 128)
+data = str_from_bytes(buffer, size)
+printf(data)
 
-pos: i32 = 0
-while pos < size:
-    printf("%c", buffer[pos])
-    pos = pos + 1
 printf("\n")
 
 close_err = close(fd)

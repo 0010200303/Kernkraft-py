@@ -12,7 +12,6 @@ TWO = ir.Constant(i32, 2)
 
 type_from_name_mapping = {
     "i32": i32,
-    "str": i8p,
     "bool": ir.IntType(1),
     "void": ir.VoidType(),
     "char": i8,
@@ -21,13 +20,13 @@ type_from_name_mapping = {
 
 name_from_type_mapping = {
     i32: "i32",
-    i8p: "str",
+    i8p: "i8p",
     ir.IntType(1): "i1/bool",
     ir.VoidType(): "void",
     i8: "i8/char",
 }
 
-reserved_types = set(type_from_name_mapping.keys())
+reserved_types = set()
 
 reserved_keywords = {
     "struct",
@@ -84,6 +83,8 @@ class ExpressionsNode(TrackedNode):
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module, imports: typing.Dict[str, ir.Module] = {}) -> None:
         builder.comment(f"Expressions originating at {self.line}:{self.column}")
 
+        set(type_from_name_mapping.keys())
+
         for _import in imports.values():
             # import types
             for type_name, type in _import.context.identified_types.items():
@@ -122,10 +123,29 @@ class CallNode(TrackedNode):
         if value.type == exspected_ty:
             return value
 
+        # string to C-string
+        if exspected_ty == i8p:
+            str_ty = type_from_name_mapping.get("str")
+            if str_ty is not None:
+                # str: extract data field
+                if value.type == str_ty:
+                    return builder.extract_value(value, 0, name=f".str.data.arg.{arg_index}")
+
+                # str*: load data field
+                if isinstance(value.type, ir.PointerType) and value.type.pointee == str_ty:
+                    data_ptr_ptr = builder.gep(value, [ZERO, ZERO], name=f".ptr.str.data.arg.{arg_index}")
+                    return builder.load(data_ptr_ptr, name=f".load.str.data.arg.{arg_index}")
+
         # array to pointer decay
         if isinstance(exspected_ty, ir.PointerType) and isinstance(value.type, ir.PointerType):
             if isinstance(value.type.pointee, ir.ArrayType) and value.type.pointee.element == exspected_ty.pointee:
                 return builder.gep(value, [ZERO, ZERO], inbounds=True, name=f".decay.arg.{arg_index}")
+
+        if isinstance(exspected_ty, ir.PointerType) and isinstance(exspected_ty.pointee, ir.Aggregate):
+            if value.type == exspected_ty.pointee:
+                tmp = builder.alloca(value.type, name=f".tmp.arg.{arg_index}")
+                builder.store(value, tmp)
+                return tmp
 
         exp = name_from_type_mapping.get(exspected_ty, str(exspected_ty))
         got = name_from_type_mapping.get(value.type, str(value.type))
@@ -341,6 +361,13 @@ class IndexAccessNode(AccessNode):
             data_ptr_ptr = builder.gep(base_val, [ZERO, ZERO], name=".ptr.array.data")
             data_ptr = builder.load(data_ptr_ptr, name=".load.array.data")
             return builder.gep(data_ptr, [idx_val], name=".ptr.index")
+
+        # String: str* where body is { i8*, i32, i32 } and data pointer is field 0.
+        str_ty = type_from_name_mapping.get("str")
+        if str_ty is not None and pointee == str_ty:
+            data_ptr_ptr = builder.gep(base_val, [ZERO, ZERO], name=".ptr.str.data")
+            data_ptr = builder.load(data_ptr_ptr, name=".load.str.data")
+            return builder.gep(data_ptr, [idx_val], name=".ptr.str.index")
 
         # Plain pointer indexing (e.g. i8* for str, or T*).
         return builder.gep(base_val, [idx_val], name=".ptr.index")
@@ -580,7 +607,7 @@ class AssignmentNode(TrackedNode):
             # store only (supports member access lvalues)
             if isinstance(self.identifier, AccessNode):
                 dst_ptr = self.identifier.generate_ptr_store(builder, module)
-            else:
+            else:   
                 dst_ptr = module.symbol_table.get(self.identifier.identifier)
                 if dst_ptr is None:
                     dst_ptr = self.identifier.generate_ir(builder, module)
@@ -600,6 +627,12 @@ class AssignmentNode(TrackedNode):
                     value = builder.load(value, name=".load.copy")
                 elif isinstance(dst_ty, ir.IntType) and dst_ty.width == 8 and isinstance(value.type, ir.IntType) and value.type.width == 32:
                     value = builder.trunc(value, dst_ty, name=".trunc.assign")
+                elif (isinstance(dst_ty, ir.PointerType) and isinstance(dst_ty.pointee, ir.Aggregate) and value.type == dst_ty.pointee):
+                    nbytes = _sizeof_as_i32(builder, dst_ty.pointee)
+                    raw = builder.call(module.globals["malloc"], [nbytes], name=".call.box.malloc")
+                    boxed_ptr = builder.bitcast(raw, dst_ty, name=".box.ptr")
+                    builder.store(value, boxed_ptr)
+                    value = boxed_ptr
                 else:
                     exp = name_from_type_mapping.get(dst_ty, str(dst_ty))
                     got = name_from_type_mapping.get(value.type, str(value.type))
@@ -607,35 +640,33 @@ class AssignmentNode(TrackedNode):
 
             builder.store(value, dst_ptr)
 
-# region literals
 class StringLiteralNode(TrackedNode):
     def __init__(self, value: str, line: int, column: int):
         super().__init__(line, column)
-        self._type = ir.PointerType(i8)
         self.value = value
 
     def __repr__(self, level: int = 0) -> str:
         return "\t" * level + f'StringLiteralNode("{self.value}") at {self.line}:{self.column}\n'
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
-        name =  ".literal:" + self.value
-        if module.globals.get(name):
-            str_ptr = builder.bitcast(module.globals[name], self._type, name=".ptr" + name)
-            return str_ptr
+        str_ty = type_from_name_mapping["str"]
 
-        byte_arr = bytes(self.value, "utf8").decode("unicode_escape").encode("utf8") + b"\00"
+        byte_arr = bytes(self.value, "utf8").decode("unicode_escape").encode("utf8")
+        name = ".literal.bytes:" + self.value
 
-        c_str = ir.Constant(ir.ArrayType(i8, len(byte_arr)), bytearray(byte_arr))
-        global_str = ir.GlobalVariable(module, c_str.type, name=name)
-        global_str.linkage = "private"
-        global_str.global_constant = True
-        global_str.unnamed_addr = True
-        global_str.initializer = c_str
+        if module.globals.get(name) is None:
+            arr = ir.Constant(ir.ArrayType(i8, len(byte_arr)), bytearray(byte_arr))
+            g = ir.GlobalVariable(module, arr.type, name=name)
+            g.linkage = "private"
+            g.global_constant = True
+            g.unnamed_addr = True
+            g.initializer = arr
 
-        str_ptr = builder.gep(global_str, [ZERO, ZERO], name=".ptr" + name)
+        g = module.globals[name]
+        src_ptr = builder.gep(g, [ZERO, ZERO], name=".literal.ptr")
+        return builder.call(module.globals["str_from_bytes"], [src_ptr, ir.Constant(i32, len(byte_arr))])
 
-        return str_ptr
-
+# region literals
 class IntegerLiteralNode(TrackedNode):
     def __init__(self, value: int, line: int, column: int):
         super().__init__(line, column)

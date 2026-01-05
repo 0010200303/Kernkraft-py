@@ -7,7 +7,7 @@ struct LinkedList:
     count: i32
 
 func print_node_data(node: Node) -> void:
-    printf("%s ", node.data)
+    printf("%s ", str_to_cstr(node.data))
 
 func print(linked_list: LinkedList) -> void:
     current_node = linked_list.head

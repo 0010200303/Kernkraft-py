@@ -14,5 +14,5 @@ scoreboard.player1.score = 1337
 scoreboard.player2.name = "tust1"
 scoreboard.player2.score = 2807
 
-printf("Player %s has %d Points!\n", scoreboard.player1.name, scoreboard.player1.score)
-printf("Player %s has %d Points!\n", scoreboard.player2.name, scoreboard.player2.score)
+printf("Player %s has %d Points!\n", str_to_cstr(scoreboard.player1.name), scoreboard.player1.score)
+printf("Player %s has %d Points!\n", str_to_cstr(scoreboard.player2.name), scoreboard.player2.score)

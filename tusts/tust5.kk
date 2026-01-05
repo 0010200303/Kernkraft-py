@@ -3,7 +3,7 @@ struct Player:
     score: i32
 
 func print_player(player: Player) -> void:
-    printf("Player %s:\n", player.name)
+    printf("Player %s:\n", str_to_cstr(player.name))
     printf("\tscore: %d\n", player.score)
 
 player_arr: Player[2]
