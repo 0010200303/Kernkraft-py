@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernkraft-python-compiler"
+version = "0.1.0"
+description = "very basic Kernkraft python compiler just to get the main compiler going"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "llvmlite",
+]
+
+[project.scripts]
+kkpy = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "lexer", "parser", "tokens", "ast_nodes", "ir_gen"]

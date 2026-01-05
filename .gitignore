@@ -3,3 +3,4 @@ __pycache__/
 bin/
 
 .venv/
+kernkraft_python_compiler.egg-info/
