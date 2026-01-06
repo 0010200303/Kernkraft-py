@@ -159,20 +159,34 @@ class CallNode(TrackedNode):
             raise ValueError(f"Function {self.name} not found")
 
         func_ty = func.function_type
-        fixed_param_tys = list(func_ty.args)
+        sret = getattr(func, "_sret", False)
+        if sret:
+            fixed_param_tys = list(func_ty.args)[1:]
+        else:
+            fixed_param_tys = list(func_ty.args)
 
         if (not func_ty.var_arg) and (len(self.args) != len(fixed_param_tys)):
             raise ValueError(f"Function {self.name} expects {len(fixed_param_tys)} args, got {len(self.args)} at {self.line}:{self.column}")
         if len(self.args) < len(fixed_param_tys):
             raise ValueError(f"Function {self.name} expects at least {len(fixed_param_tys)} args, got {len(self.args)} at {self.line}:{self.column}")
         
-        args: list[ir.Value] = []
+        call_args: list[ir.Value] = []
+        sret_slot = None
+        if sret:
+                sret_ty = getattr(func, "_sret_type")
+                sret_slot = builder.alloca(sret_ty, name=".sret.slot")
+                call_args.append(sret_slot)
+
         for idx, arg_node in enumerate(self.args):
             value = arg_node.generate_ir(builder, module)
             if idx < len(fixed_param_tys):
                 value = self.coerce_call_arg(builder, value, fixed_param_tys[idx], idx)
-            args.append(value)
-        return builder.call(func, args, name=".call:" + self.name)
+            call_args.append(value)
+
+        call = builder.call(func, call_args, name=".call:" + self.name)
+        if sret:
+            return builder.load(sret_slot, name=".sret.load")
+        return call
 
 class IdentifierNode(TrackedNode):
     def __init__(self, identifier: str, line: int, column: int):
@@ -835,6 +849,9 @@ class FunctionNode(TrackedNode):
         if module.globals.get(qualified_name):
             raise ValueError(f"Function {qualified_name} already defined at {self.line}:{self.column}")
 
+        ret_ty = type_from_name_mapping.get(self.return_type)
+        sret = isinstance(ret_ty, ir.Aggregate)
+
         params_types = []
         for param in self.params:
             if param.typed is None:
@@ -851,13 +868,24 @@ class FunctionNode(TrackedNode):
 
             params_types.append(param_type)
 
-        func_type = ir.FunctionType(type_from_name_mapping.get(self.return_type, ir.VoidType()), params_types)
+        if sret:
+            func_type = ir.FunctionType(ir.VoidType(), [ir.PointerType(ret_ty)] + params_types)
+        else:
+            func_type = ir.FunctionType(type_from_name_mapping.get(self.return_type, ir.VoidType()), params_types)
         func = ir.Function(module, func_type, name=qualified_name)
 
-        if len(func.args) != len(self.params):
+        if sret:
+            func._sret = True
+            func._sret_type = ret_ty
+
+        if len(func.args) != len(self.params) + 1 if sret else 0:
             raise ValueError(f"Function {qualified_name} parameter count mismatch at {self.line}:{self.column}")
+
         for i, param in enumerate(self.params):
-            func.args[i].name = param.identifier.identifier
+            func.args[i + (1 if sret else 0)].name = param.identifier.identifier
+
+        if sret:
+            func.args[0].name = ".sret"
 
         block = func.append_basic_block(name="entry")
         func_builder = ir.IRBuilder(block)
@@ -887,6 +915,24 @@ class ReturnNode(TrackedNode):
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
         ret_value = self.value.generate_ir(builder, module)
+        func = builder.function
+
+        if getattr(func, "_sret", False):
+            sret_ptr = func.args[0]
+            sret_pointee = sret_ptr.type.pointee
+
+            if ret_value == sret_pointee:
+                builder.store(ret_value, sret_ptr)
+            elif isinstance(ret_value.type, ir.PointerType) and ret_value.type.pointee == sret_pointee:
+                tmp = builder.load(ret_value, name=".load.ret.ptr")
+                builder.store(tmp, sret_ptr)
+            else:
+                exp = name_from_type_mapping.get(sret_pointee, str(sret_pointee))
+                got = name_from_type_mapping.get(ret_value.type, str(ret_value.type))
+                raise TypeError(f"Return type mismatch at {self.line}:{self.column}: expected {exp}, got {got}")
+            builder.ret_void()
+            return
+        
         builder.ret(ret_value)
 
 class IfNode(TrackedNode):
@@ -983,11 +1029,43 @@ class LenNode(TrackedNode):
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         operand_value = self.operand.generate_ir(builder, module)
 
-        if not (isinstance(operand_value.type, ir.Aggregate) or isinstance(operand_value.allocated_type, ir.Aggregate)):
-            raise TypeError(f"Length operand must be an aggregate at {self.line}:{self.column}")
+        # static array
+        if isinstance(operand_value.type, ir.ArrayType):
+            return ir.Constant(i32, operand_value.type.count)
 
-        # TODO: what is this?!
-        return ir.Constant(i32, 2)
+        # pointer
+        if isinstance(operand_value.type, ir.PointerType):
+            pointee = operand_value.type.pointee
+
+            # static array
+            if isinstance(pointee, ir.ArrayType):
+                return ir.Constant(i32, pointee.count)
+
+            # dynamic array
+            if isinstance(pointee, ir.IdentifiedStructType) and (pointee.name or "").startswith("array."):
+                len_ptr = builder.gep(operand_value, [ZERO, ONE], name=".ptr.len")
+                return builder.load(len_ptr, name=".load.len")
+
+            # string
+            str_ty = type_from_name_mapping.get("str")
+            if str_ty is not None and pointee == str_ty:
+                len_ptr = builder.gep(operand_value, [ZERO, ONE], name=".ptr.str.len")
+                return builder.load(len_ptr, name=".load.str.len")
+            
+            raise TypeError(f"Length operand must be an array or string at {self.line}:{self.column}")
+
+        # aggregate value
+        if isinstance(operand_value.type, ir.IdentifiedStructType):
+            # dynamic array
+            if (operand_value.type.name or "").startswith("array."):
+                return builder.extract_value(operand_value, 1, name=".extract.len")
+
+            # string
+            str_ty = type_from_name_mapping.get("str")
+            if str_ty is not None and operand_value.type == str_ty:
+                return builder.extract_value(operand_value, 1, name=".extract.str.len")
+
+        raise TypeError(f"Length operand must be an array or string at {self.line}:{self.column}")
 
 class ImportNode(TrackedNode):
     def __init__(self, name_parts: list[str], line: int, column: int):
