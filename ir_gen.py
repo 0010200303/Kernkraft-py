@@ -379,13 +379,13 @@ class IR_Generator:
             builder.ret(ir.Constant(i32, 0))
         return str(module)
 
-    def generate_module(self) -> ir.Module:
+    def generate_module(self, imports: typing.Optional[typing.Dict[str, ir.Module]] = None) -> ir.Module:
         module = ir.Module(name=self.module_name)
         self._init_module(module)
 
         builder = self.create_builder(module, f"{self.module_name}$__entry")
 
-        self.ast_root.generate_ir(builder, module)
+        self.ast_root.generate_ir(builder, module, imports or {})
 
         if not builder.block.is_terminated:
             builder.ret_void()
