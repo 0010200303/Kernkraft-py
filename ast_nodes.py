@@ -123,6 +123,10 @@ class CallNode(TrackedNode):
         if value.type == exspected_ty:
             return value
 
+        if isinstance(exspected_ty, ir.Aggregate) and isinstance(value.type, ir.PointerType):
+            if value.type.pointee == exspected_ty:
+                return builder.load(value, name=f".load.agg.arg.{arg_index}")
+
         # string to C-string
         if exspected_ty == i8p:
             str_ty = type_from_name_mapping.get("str")
@@ -143,6 +147,18 @@ class CallNode(TrackedNode):
 
         if isinstance(exspected_ty, ir.PointerType) and isinstance(exspected_ty.pointee, ir.Aggregate):
             if value.type == exspected_ty.pointee:
+                pointee = exspected_ty.pointee
+
+                if isinstance(pointee, ir.IdentifiedStructType):
+                    name = pointee.name or ""
+                    is_runtime_agg = (name == "str") or name.startswith("array.")
+                    is_user_agg = ("$" in name) or getattr(pointee, "is_union", False)
+                    if is_user_agg and not is_runtime_agg:
+                        raise TypeError(
+                            f"Call arg {arg_index} at {self.line}:{self.column}: "
+                            f"user struct/union arguments must be passed by reference (an lvalue), not by value"
+                        )
+
                 tmp = builder.alloca(value.type, name=f".tmp.arg.{arg_index}")
                 builder.store(value, tmp)
                 return tmp
@@ -178,6 +194,29 @@ class CallNode(TrackedNode):
                 call_args.append(sret_slot)
 
         for idx, arg_node in enumerate(self.args):
+            # by reference lvalue
+            if getattr(func, "_kk_user", False) and idx < len(fixed_param_tys):
+                exp_ty = fixed_param_tys[idx]
+
+                if isinstance(exp_ty, ir.PointerType) and isinstance(exp_ty.pointee, ir.IntType):
+                    lptr = None
+
+                    if isinstance(arg_node, IdentifierNode):
+                        name = arg_node.identifier
+                        lptr = module.symbol_table.get(name)
+                        if lptr is None:
+                            lptr = next((a for a in builder.function.args if a.name == name), None)
+                        if lptr is None:
+                            lptr = module.globals.get(name)
+                    elif isinstance(arg_node, AccessNode):
+                        lptr = arg_node.generate_ptr(builder, module)
+
+                    if lptr is None or lptr.type != exp_ty:
+                        raise TypeError(f"Call arg {idx} at {self.line}:{self.column}: expected an lvalue for by reference parameter")
+
+                    call_args.append(lptr)
+                    continue
+
             value = arg_node.generate_ir(builder, module)
             if idx < len(fixed_param_tys):
                 value = self.coerce_call_arg(builder, value, fixed_param_tys[idx], idx)
@@ -418,9 +457,16 @@ class AssignmentNode(TrackedNode):
         array_ty: ir.IdentifiedStructType,
         element_type: ir.Type,
     ) -> None:
-        # Minimal: only scalar elements (ints/pointers). Struct elements need memcpy support.
+        # Minimal: only scalar elements (ints/pointers). Allow `str` and aggregate (struct) elements.
         if not _is_scalar_type(element_type):
-            return
+            str_ty = type_from_name_mapping.get("str")
+            if str_ty is not None and element_type == str_ty:
+                pass
+            elif isinstance(element_type, ir.Aggregate):
+                # allow storing structs by-value into the element slot
+                pass
+            else:
+                return
 
         module = builder.module
         mangled = _mangle_type_for_symbol(element_type)
@@ -546,9 +592,30 @@ class AssignmentNode(TrackedNode):
 
         ptr = None
         if isinstance(self.identifier, AccessNode):
-            ptr = module.symbol_table.get(self.identifier.get_base_identifier().identifier)
+            base_name = self.identifier.get_base_identifier().identifier
+            ptr = module.symbol_table.get(base_name)
+
+            if ptr is None:
+                arg = next((a for a in builder.function.args if a.name == base_name), None)
+                if arg is not None:
+                    ptr = arg
+
+            if ptr is None:
+                ptr = module.globals.get(base_name)
+
+            if ptr is None:
+                raise ValueError(f"Variable {base_name} not found at {self.line}:{self.column}")
         else:
-            ptr = module.symbol_table.get(self.identifier.identifier)
+            name = self.identifier.identifier
+            ptr = module.symbol_table.get(name)
+
+            if ptr is None:
+                arg = next((a for a in builder.function.args if a.name == name), None)
+                if arg is not None and isinstance(arg.type, ir.PointerType):
+                    ptr = arg
+
+            if ptr is None:
+                ptr = module.globals.get(name)
 
         if ptr is None:
             # alloc
@@ -621,10 +688,15 @@ class AssignmentNode(TrackedNode):
             # store only (supports member access lvalues)
             if isinstance(self.identifier, AccessNode):
                 dst_ptr = self.identifier.generate_ptr_store(builder, module)
-            else:   
-                dst_ptr = module.symbol_table.get(self.identifier.identifier)
+            else:
+                name = self.identifier.identifier
+                dst_ptr = module.symbol_table.get(name)
                 if dst_ptr is None:
-                    dst_ptr = self.identifier.generate_ir(builder, module)
+                    arg = next((a for a in builder.function.args if a.name == name), None)
+                    if arg is not None and isinstance(arg.type, ir.PointerType):
+                        dst_ptr = arg
+                    else:
+                        dst_ptr = self.identifier.generate_ir(builder, module)
 
             value = self.value.generate_ir(builder, module)
             if self.typed is not None:
@@ -724,6 +796,7 @@ class StructNode(TrackedNode):
         type_from_name_mapping[qualified_name] = struct_ty
         name_from_type_mapping[struct_ty] = qualified_name
 
+        helper = AssignmentNode(IdentifierNode(".__struct_field_tmp", self.line, self.column), None, self.line, self.column)
         field_names = []
         field_types = []
         for field in self.fields:
@@ -733,24 +806,31 @@ class StructNode(TrackedNode):
             elif field.value is not None:
                 raise ValueError(f"Field {field.identifier.identifier} in struct {qualified_name} cannot have an initial value at {field.line}:{field.column}")
 
-            # Allow self-referential member types by lowering to pointer-to-self
+            base_ty = None
             if qualified_field_type == qualified_name:
-                field_type = ir.PointerType(struct_ty)
+                base_ty = struct_ty
             else:
-                field_type = type_from_name_mapping.get(qualified_field_type)
+                base_ty = type_from_name_mapping.get(qualified_field_type) or type_from_name_mapping.get(field.typed)
 
-                if field_type:
-                    field_type = ir.PointerType(field_type)
-                else:
-                    field_type = type_from_name_mapping.get(field.typed)
-
-            if field_type is None:
-                field_type = type_from_name_mapping.get(qualified_field_type)
-            if field_type is None:
+            if base_ty is None:
                 raise ValueError(f"Unknown type '{field.typed}' for field {field.identifier.identifier} in struct {self.name} at {field.line}:{field.column}")
 
-            if field_names.count(field.identifier.identifier) != 0:
-                raise ValueError(f"Duplicate field '{field.identifier.identifier}' in struct {qualified_name} at {field.line}:{field.column}")
+            # Handle arrays on struct fields
+            if field.typed_arr_len is not None:
+                if field.typed_arr_len > 0:
+                    field_type = ir.ArrayType(base_ty, field.typed_arr_len)
+                elif field.typed_arr_len == -1:
+                    field_type = helper.generate_dynamic_array_type(builder, base_ty)  # creates array.* + array_append_*
+                else:
+                    raise ValueError(f"Invalid array size {field.typed_arr_len} for field {field.identifier.identifier} at {field.line}:{field.column}")
+            else:
+                # Keep existing “user-defined types become pointers” behavior
+                if qualified_field_type == qualified_name:
+                    field_type = ir.PointerType(struct_ty)
+                elif type_from_name_mapping.get(qualified_field_type) is not None:
+                    field_type = ir.PointerType(base_ty)
+                else:
+                    field_type = base_ty
 
             field_types.append(field_type)
             field_names.append(field.identifier.identifier)
@@ -863,7 +943,7 @@ class FunctionNode(TrackedNode):
             if param_type is None:
                 raise ValueError(f"Unknown type {param.typed} for parameter {param.identifier.identifier} in function {self.name} at {param.line}:{param.column}")
 
-            if isinstance(param_type, ir.Aggregate):
+            if not isinstance(param_type, ir.PointerType):
                 param_type = ir.PointerType(param_type)
 
             params_types.append(param_type)
@@ -873,12 +953,14 @@ class FunctionNode(TrackedNode):
         else:
             func_type = ir.FunctionType(type_from_name_mapping.get(self.return_type, ir.VoidType()), params_types)
         func = ir.Function(module, func_type, name=qualified_name)
+        func._kk_user = True
 
         if sret:
             func._sret = True
             func._sret_type = ret_ty
 
-        if len(func.args) != len(self.params) + 1 if sret else 0:
+        expected_argc = len(self.params) + (1 if sret else 0)
+        if len(func.args) != expected_argc:
             raise ValueError(f"Function {qualified_name} parameter count mismatch at {self.line}:{self.column}")
 
         for i, param in enumerate(self.params):
@@ -921,7 +1003,7 @@ class ReturnNode(TrackedNode):
             sret_ptr = func.args[0]
             sret_pointee = sret_ptr.type.pointee
 
-            if ret_value == sret_pointee:
+            if ret_value.type == sret_pointee:
                 builder.store(ret_value, sret_ptr)
             elif isinstance(ret_value.type, ir.PointerType) and ret_value.type.pointee == sret_pointee:
                 tmp = builder.load(ret_value, name=".load.ret.ptr")
