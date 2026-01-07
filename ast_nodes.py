@@ -1000,18 +1000,28 @@ class FunctionNode(TrackedNode):
         module.symbol_table = old_symbol_table
 
 class ReturnNode(TrackedNode):
-    def __init__(self, value: ASTNode, line: int, column: int):
+    def __init__(self, value: ASTNode | None, line: int, column: int):
         super().__init__(line, column)
         self.value = value
 
     def __repr__(self, level: int = 0) -> str:
         ret = "\t" * level + f"ReturnNode() at {self.line}:{self.column}\n"
-        ret += self.value.__repr__(level + 1)
+        if self.value is not None:
+            ret += self.value.__repr__(level + 1)
         return ret
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
-        ret_value = self.value.generate_ir(builder, module)
         func = builder.function
+
+        if self.value is None:
+            if getattr(func, "_sret", False):
+                raise TypeError(f"Bare return is not allowed for aggregate-return function at {self.line}:{self.column}")
+            if isinstance(func.function_type.return_type, ir.VoidType):
+                builder.ret_void()
+                return
+            exp = name_from_type_mapping.get(func.function_type.return_type, str(func.function_type.return_type))
+            raise TypeError(f"Bare return in non-void function at {self.line}:{self.column}: expected {exp}")
+        ret_value = self.value.generate_ir(builder, module)
 
         if getattr(func, "_sret", False):
             sret_ptr = func.args[0]

@@ -109,6 +109,8 @@ class Parser:
             return self.parse_function()
         elif self.check(ReturnToken):
             token = self.consume(ReturnToken)
+            if self.check(EndOfLineToken) or self.check(DedentToken) or self.check(EndOfFileToken):
+                return ReturnNode(None, token.line, token.column)
             expr = self.parse_statement()
             return ReturnNode(expr, token.line, token.column)
         elif self.check(IfToken):
