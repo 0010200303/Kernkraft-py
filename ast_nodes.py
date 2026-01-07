@@ -926,7 +926,24 @@ class FunctionNode(TrackedNode):
         if module.globals.get(qualified_name):
             raise ValueError(f"Function {qualified_name} already defined at {self.line}:{self.column}")
 
-        ret_ty = type_from_name_mapping.get(self.return_type)
+        ret_ty = None
+        if isinstance(self.return_type, tuple):
+            base_name, arr_len = self.return_type
+            base_ty = type_from_name_mapping.get(base_name) or type_from_name_mapping(module.module_name + "$" + base_name)
+            if base_ty is None:
+                raise ValueError(f"Unknown return type '{base_name}' for function {self.name} at {self.line}:{self.column}")
+
+            if arr_len > 0:
+                ret_ty = ir.ArrayType(base_ty, arr_len)
+            elif arr_len == -1:
+                helper = AssignmentNode(IdentifierNode(".__ret_array_tmp", self.line, self.column), None, self.line, self.column)
+                ret_ty = helper.generate_dynamic_array_type(builder, base_ty)
+            else:
+                raise ValueError(f"Invalid array size {arr_len} for return type of function {self.name} at {self.line}:{self.column}")
+        else:
+            if self.return_type is not None:
+                ret_ty = type_from_name_mapping.get(self.return_type) or type_from_name_mapping.get(module.module_name + "$" + self.return_type)
+        
         sret = isinstance(ret_ty, ir.Aggregate)
 
         params_types = []

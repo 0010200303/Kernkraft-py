@@ -338,7 +338,18 @@ class Parser:
 
         if self.check(ArrowToken):
             self.advance()
-            function_node.return_type = self.parse_qualified_name()
+            base_ret = self.parse_qualified_name()
+            if self.check(OpenBracketToken):
+                self.advance()
+                if self.check(IntegerLiteralToken):
+                    arr_len_token = self.consume(IntegerLiteralToken, f"Expected integer array length after '[' but got {self.current_token}")
+                    arr_len = arr_len_token.value
+                else:
+                    arr_len = -1
+                self.consume(CloseBracketToken, f"Expected ']' after return type but got {self.current_token}")
+                function_node.return_type = (base_ret, arr_len)
+            else:
+                function_node.return_type = base_ret
 
         self.consume(ColonToken, f"Expected ':' after function declaration but got {self.current_token}")
         self.consume(EndOfLineToken, f"Expected end of line after function declaration but got {self.current_token}")
