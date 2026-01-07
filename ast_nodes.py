@@ -881,10 +881,7 @@ class UnionNode(TrackedNode):
             if ty is None:
                 ty = type_from_name_mapping.get(module.module_name + "$" + field.typed)
             if ty is None:
-                raise ValueError(f"Unknown type '{field.type}' for variant {field.identifier.identifier} in union {qualified_name} at {field.line}:{field.column}")
-
-            if isinstance(ty, ir.Aggregate):
-                ty = ir.PointerType(ty)
+                raise ValueError(f"Unknown type '{field.typed}' for variant {field.identifier.identifier} in union {qualified_name} at {field.line}:{field.column}")
 
             if field.identifier.identifier in variant_names:
                 raise ValueError(f"Duplicate variant '{field.identifier.identifier}' in union {qualified_name} at {field.line}:{field.column}")
