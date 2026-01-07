@@ -2,6 +2,7 @@ import abc
 import typing
 from llvmlite import ir
 
+i1 = ir.IntType(1)
 i8 = ir.IntType(8)
 i32 = ir.IntType(32)
 i8p = ir.PointerType(i8)
@@ -9,6 +10,9 @@ i8p = ir.PointerType(i8)
 ZERO = ir.Constant(i32, 0)
 ONE = ir.Constant(i32, 1)
 TWO = ir.Constant(i32, 2)
+
+FALSE = ir.Constant(i1, 0)
+TRUE = ir.Constant(i1, 1)
 
 type_from_name_mapping = {
     "i32": i32,
@@ -33,6 +37,7 @@ reserved_keywords = {
     "union",
     "func",
     "len",
+    "is",
 }
 
 def _is_scalar_type(ty: ir.Type) -> bool:
@@ -1185,6 +1190,65 @@ class ImportNode(TrackedNode):
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
         pass
+
+class IsNode(TrackedNode):
+    def __init__(self, value: ASTNode, type_name: str, line: int, column: int):
+        super().__init__(line, column)
+        self.value = value
+        self.type_name = type_name
+
+    def __repr__(self, level: int  = 0) -> str:
+        ret = "\t" * level + f"IsNode({self.type_name}) at {self.line}:{self.column}\n"
+        ret += self.value.__repr__(level + 1)
+        return ret
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
+        target_ty = type_from_name_mapping.get(self.type_name)
+        if target_ty is None and "$" not in self.type_name:
+            target_ty = type_from_name_mapping.get(module.module_name + "$" + self.type_name)
+        if target_ty is None:
+            raise ValueError(f"Unknown type '{self.type_name}' in 'is' at {self.line}:{self.column}")
+
+        lhs_value = self.value.generate_ir(builder, module)
+        lhs_ty = lhs_value.type
+
+        # convert ptr to type directly to type
+        effective_ty = lhs_ty
+        if isinstance(lhs_ty, ir.PointerType) and isinstance(lhs_ty.pointee, ir.Aggregate):
+            effective_ty = lhs_ty.pointee
+
+        # union runtime check (compare tag)
+        if isinstance(effective_ty, ir.IdentifiedStructType) and getattr(effective_ty, "is_union", False):
+            if target_ty == effective_ty:
+                return TRUE
+
+            variant_types = getattr(effective_ty, "union_variant_types", [])
+            idx = None
+            for i, vty in enumerate(variant_types):
+                if vty == target_ty:
+                    idx = i
+                    break
+            if idx is None:
+                raise TypeError(f"'is' type '{self.type_name}' is not a variant of union '{effective_ty.name}' at {self.line}:{self.column}")
+
+            if isinstance(lhs_ty, ir.PointerType) and lhs_ty.pointee == effective_ty:
+                union_ptr = lhs_value
+            elif lhs_ty == effective_ty:
+                tmp = builder.alloca(effective_ty, name=".tmp.union.is")
+                builder.store(lhs_value, tmp)
+                union_ptr = tmp
+            else:
+                return FALSE
+
+            tag_ptr = builder.gep(union_ptr, [ZERO, ZERO], name=".ptr.union.tag")
+            tag = builder.load(tag_ptr, name=".load.union.tag")
+            return builder.icmp_signed("==", tag, ir.Constant(i32, idx), name=".is")
+
+        # compile time equality
+        if effective_ty == target_ty:
+            return TRUE
+        else:
+            return FALSE
 # endregion
 
 # region operators

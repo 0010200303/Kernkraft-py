@@ -142,4 +142,7 @@ class LenToken(BaseToken):
 
 class ImportToken(BaseToken):
     pass
+
+class IsToken(BaseToken):
+    pass
 # endregion

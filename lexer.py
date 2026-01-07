@@ -12,6 +12,7 @@ class Lexer:
         "while": WhileToken,
         "len": LenToken,
         "import": ImportToken,
+        "is": IsToken,
     }
 
     def __init__(self, data: str):

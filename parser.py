@@ -77,7 +77,8 @@ class Parser:
         elif self.check(PercentToken):
             return MODULO_BINDING_POWER
         elif self.check(EqualToken) or self.check(NotEqualToken) or self.check(LessThanToken) or \
-             self.check(GreaterThanToken) or self.check(LessOrEqualToken) or self.check(GreaterOrEqualToken):
+            self.check(GreaterThanToken) or self.check(LessOrEqualToken) or self.check(GreaterOrEqualToken) or \
+            self.check(IsToken):
             return COMPARISON_BINDING_POWER
         return None
 
@@ -171,6 +172,11 @@ class Parser:
             operator_token = self.consume(GreaterOrEqualToken)
             right = self.parse_expression(binding_power)
             return BinaryGreaterOrEqualNode(left, right, operator_token.line, operator_token.column)
+
+        elif self.check(IsToken):
+            operator_token = self.consume(IsToken)
+            type_name = self.parse_qualified_name()
+            return IsNode(left, type_name, operator_token.line, operator_token.column)
 
         raise Exception(f"Unexpected infix operator {self.current_token} at {self.current_token_pos()}")
 
