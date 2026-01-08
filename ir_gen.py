@@ -297,6 +297,64 @@ class IR_Generator:
             b.store(ir.Constant(i8, 0), endp)
             b.ret_void()
 
+        if "str_append_char" not in module.globals:
+            fn = ir.Function(
+                module,
+                ir.FunctionType(ir.VoidType(), [ir.PointerType(str_ty), i8]),
+                name="str_append_char",
+            )
+            fn.linkage = "internal"
+            dst_arg, ch_arg = fn.args
+            dst_arg.name = "dst"
+            ch_arg.name = "ch"
+
+            entry = fn.append_basic_block("entry")
+            grow = fn.append_basic_block("grow")
+            append_bb = fn.append_basic_block("append")
+            
+            b = ir.IRBuilder(entry)
+
+            dst_data_p = b.gep(dst_arg, [ZERO, ZERO], name=".dst.data.p")
+            dst_len_p = b.gep(dst_arg, [ZERO, ONE], name=".dst.len.p")
+            dst_cap_p = b.gep(dst_arg, [ZERO, TWO], name=".dst.cap.p")
+
+            dst_data = b.load(dst_data_p, name=".dst.data")
+            dst_len = b.load(dst_len_p, name=".dst.len")
+            dst_cap = b.load(dst_cap_p, name=".dst.cap")
+
+            new_len = b.add(dst_len, ONE, name=".new.len")
+            need_grow = b.icmp_signed(">", new_len, dst_cap, name=".need.grow")
+            b.cbranch(need_grow, grow, append_bb)
+
+            # grow
+            b.position_at_start(grow)
+            cap0 = b.icmp_signed("==", dst_cap, ZERO, name=".cap0")
+            cap2 = b.mul(dst_cap, ir.Constant(i32, 2), name=".cap2")
+            cap_base = b.select(cap0, ONE, cap2, name=".cap.base")
+            cap_lt_need = b.icmp_signed("<", cap_base, new_len, name=".cap.lt.need")
+            new_cap = b.select(cap_lt_need, new_len, cap_base, name=".cap.new")
+
+            nbytes = b.add(new_cap, ONE, name=".nbytes")
+            old_i8p = b.bitcast(dst_data, ir.PointerType(i8), name=".old.i8p")
+            raw = b.call(module.globals["realloc"], [old_i8p, nbytes], name=".call.realloc")
+            new_data = b.bitcast(raw, ir.PointerType(i8), name=".new.data")
+
+            b.store(new_data, dst_data_p)
+            b.store(new_cap, dst_cap_p)
+            b.branch(append_bb)
+
+            # append
+            b.position_at_start(append_bb)
+            dst_data2 = b.load(dst_data_p, name=".dst.data2")
+            dst_len2 = b.load(dst_len_p, name=".dst.len2")
+
+            dest_ptr = b.gep(dst_data2, [dst_len2], name=".dst.append.ptr")
+            b.store(ch_arg, dest_ptr)
+            b.store(new_len, dst_len_p)
+            endp = b.gep(dst_data2, [new_len], name=".dst.end")
+            b.store(ir.Constant(i8, 0), endp)
+            b.ret_void()
+
     def _init_module(self, module: ir.Module) -> None:
         module.triple = self.module_triple
         module.module_name = self.module_name
