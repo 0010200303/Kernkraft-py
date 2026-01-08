@@ -86,9 +86,14 @@ class ExpressionsNode(TrackedNode):
         return ret
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module, imports: typing.Dict[str, ir.Module] = {}) -> None:
-        builder.comment(f"Expressions originating at {self.line}:{self.column}")
-
         set(type_from_name_mapping.keys())
+
+        if not hasattr(module, "kk_imports"):
+            module.kk_imports = set()
+        module.kk_imports |= set(imports.keys())
+        module.kk_imports.add(module.module_name)
+
+        builder.comment(f"Expressions originating at {self.line}:{self.column}")
 
         for _import in imports.values():
             # import types
@@ -104,6 +109,23 @@ class ExpressionsNode(TrackedNode):
 
                 imported_function = ir.Function(module, function.function_type, name=function_name)
                 imported_function.linkage = "external"
+
+            # import globals
+            for gv_name, gv in _import.globals.items():
+                if not isinstance(gv, ir.GlobalVariable) or gv.linkage != "":
+                    continue
+
+                dep_mod_name = getattr(_import, "module_name", None) or getattr(_import, "name", "")
+                if dep_mod_name and not gv_name.startswith(dep_mod_name + "$"):
+                    continue
+
+                if module.globals.get(gv_name) is not None:
+                    continue
+
+                elem_ty = gv.type.pointee
+                imported_gv = ir.GlobalVariable(module, elem_ty, name=gv_name)
+                imported_gv.linkage = "external"
+                imported_gv.global_constant = getattr(gv, "global_constant", False)
 
         for child in self.children:
             child.generate_ir(builder, module)
@@ -254,6 +276,8 @@ class IdentifierNode(TrackedNode):
         if ptr is None:
             ptr = module.globals.get(self.identifier)
         if ptr is None:
+            ptr = module.globals.get(module.module_name + "$" + self.identifier)
+        if ptr is None:
             raise ValueError(f"Variable {self.identifier} not found at {self.line}:{self.column}")
 
         if isinstance(ptr.type, ir.PointerType) and _is_scalar_type(ptr.type.pointee):
@@ -315,6 +339,25 @@ class MemberAccessNode(AccessNode):
         return ret
 
     def generate_ptr(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        # module namespace access
+        if isinstance(self.identifier, IdentifierNode):
+            base = self.identifier.identifier
+
+            is_value_name = (
+                module.symbol_table.get(base) is not None
+                or next((a for a in builder.function.args if a.name == base), None) is not None
+                or module.globals.get(base) is not None
+                or module.globals.get(module.module_name + "$" + base) is not None
+            )
+
+            kk_imports = getattr(module, "kk_imports", set())
+            if (not is_value_name) and (base in kk_imports):
+                sym = f"{base}${self.member}"
+                gv = module.globals.get(sym)
+                if gv is None:
+                    raise ValueError(f"Unknown imported symbol '{base}.{self.member}' at {self.line}:{self.column}")
+                return gv
+
         base_val = self.identifier.generate_ir(builder, module)
         if not isinstance(base_val.type, ir.PointerType):
             raise TypeError(f"Member access base must be a pointer at {self.line}:{self.column}")
@@ -660,6 +703,29 @@ class AssignmentNode(TrackedNode):
                         raise TypeError(f"Type mismatch for variable {self.identifier.identifier} at {self.line}:{self.column}: expected {self.typed}, got {got}")
 
             builder.position_at_start(builder.block)
+
+            # export top level constants as llvm globals
+            is_top_level = builder.function.name in ("main", f"{module.module_name}$__entry")
+            if is_top_level and isinstance(self.identifier, IdentifierNode) and self.typed is not None:
+                name = self.identifier.identifier
+                var_type = type_from_name_mapping.get(self.typed) or type_from_name_mapping.get(module.module_name + "$" + self.typed)
+                if var_type is None:
+                    raise ValueError(f"Unknown type {self.typed} for variable {name} at {self.line}:{self.column}")
+
+                gv_name = f"{module.module_name}${name}"
+                if module.globals.get(gv_name) is not None:
+                    raise ValueError(f"Global {gv_name} already defined at {self.line}:{self.column}")
+
+                init_val = self.value.value
+                init_const = ir.Constant(var_type, init_val)
+
+                g = ir.GlobalVariable(module, var_type, name=gv_name)
+                g.initializer = init_const
+                g.global_constant = True
+
+                builder.position_at_end(builder.block)
+                return
+
             ptr = builder.alloca(var_type, name=self.identifier.identifier)
             
             # default-init unions: { tag=-1, payload=null }
