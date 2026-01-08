@@ -849,6 +849,7 @@ class AssignmentNode(TrackedNode):
 
             builder.store(value, dst_ptr)
 
+# region literals
 class StringLiteralNode(TrackedNode):
     def __init__(self, value: str, line: int, column: int):
         super().__init__(line, column)
@@ -875,7 +876,6 @@ class StringLiteralNode(TrackedNode):
         src_ptr = builder.gep(g, [ZERO, ZERO], name=".literal.ptr")
         return builder.call(module.globals["str_from_bytes"], [src_ptr, ir.Constant(i32, len(byte_arr))])
 
-# region literals
 class IntegerLiteralNode(TrackedNode):
     def __init__(self, value: int, line: int, column: int):
         super().__init__(line, column)
@@ -887,6 +887,22 @@ class IntegerLiteralNode(TrackedNode):
 
     def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         return ir.Constant(self._type, self.value)
+
+class CharLiteralNode(TrackedNode):
+    def __init__(self, value: str, line: int, column: int):
+        super().__init__(line, column)
+        self._type = i8
+        self.value = value
+
+    def __repr__(self, level: int = 0) -> str:
+        return "\t" * level + f"CharLiteralNode('{self.value}') at {self.line}:{self.column}\n"
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
+        # escape char
+        byte_arr = bytes(self.value, "utf8").decode("unicode_escape").encode("utf8")
+        if len(byte_arr) != 1:
+            raise TypeError(f"Char literal must be exactly one byte at {self.line}:{self.column}")
+        return ir.Constant(i8, byte_arr[0])
 # endregion
 
 # region keyword nodes

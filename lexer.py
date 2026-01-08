@@ -101,6 +101,28 @@ class Lexer:
         self.advance()
         return StringLiteralToken(value, self.line, self.column - (self.position - start_pos) - 1)
 
+    def char_literal(self) -> CharLiteralToken:
+        self.consume("'", f"Expected ''' at the start of char literal at {self.position}")
+
+        start_pos = self.position
+        # simple escaping
+        if self.current_char == "\\":
+            self.advance()
+            if self.current_char is None:
+                raise Exception(f"Unterminated char escape at {self.position}")
+            self.advance()
+        else:
+            if self.current_char is None:
+                raise Exception(f"Unterminated char literal at {self.position}")
+            self.advance()
+
+        if self.current_char != "'":
+            raise Exception(f"Char literal must contain exactly one character at {self.position}")
+
+        raw = self.data[start_pos:self.position]
+        self.advance()
+        return CharLiteralToken(raw, self.line, self.column - (self.position - start_pos) - 1)
+
     def identifier(self) -> IdentifierToken:
         start_pos = self.position
         while (self.current_char is not None and (self.current_char.isalnum() or self.current_char == '_')):
@@ -174,6 +196,10 @@ class Lexer:
                     self.advance()
                 value = int(self.data[start_pos:self.position])
                 self.tokens.append(IntegerLiteralToken(value, self.line, self.column - (self.position - start_pos)))
+
+            # char literal
+            elif self.current_char == "'":
+                self.tokens.append(self.char_literal())
 # endregion
 
 # region operators

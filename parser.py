@@ -98,6 +98,8 @@ class Parser:
             return self.parse_string_literal()
         elif self.check(IntegerLiteralToken):
             return self.parse_integer_literal()
+        elif self.check(CharLiteralToken):
+            return self.parse_char_literal()
 # endregion
         elif self.check(IdentifierToken):
             return self.parse_identifier()
@@ -223,7 +225,11 @@ class Parser:
     def parse_integer_literal(self) -> IntegerLiteralNode:
         token = self.consume(IntegerLiteralToken, f"Expected integer literal but got {self.current_token}")
         return IntegerLiteralNode(token.value, token.line, token.column)
-    
+
+    def parse_char_literal(self) -> CharLiteralNode:
+        token = self.consume(CharLiteralToken, f"Expected char literal but got {self.current_token}")
+        return CharLiteralNode(token.value, token.line, token.column)
+
     def parse_call(self, identifier_node: IdentifierNode | AccessNode) -> CallNode:
         call_node = CallNode(identifier_node.get_joined_name(), identifier_node.line, identifier_node.column)
         self.consume(OpenParenthesisToken, f"Expected '(' after function name but got {self.current_token}")

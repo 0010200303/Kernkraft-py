@@ -75,6 +75,14 @@ class IntegerLiteralToken(BaseToken):
 
     def __repr__(self):
         return f"IntegerLiteralToken({self.value}) at {self.line}:{self.column}"
+
+class CharLiteralToken(BaseToken):
+    def __init__(self, value: str, line: int, column: int):
+        super().__init__(line, column)
+        self.value = value
+
+    def __repr__(self):
+        return f"CharLiteralToken('{self.value}' at {self.line}:{self.column})"
 # endregion
 
 # region operators
