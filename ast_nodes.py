@@ -57,6 +57,33 @@ def _sizeof_as_i32(builder: ir.IRBuilder, element_type: ir.Type) -> ir.Value:
     one_past = builder.gep(null_tptr, [ONE], name=".sizeof.gep")
     return builder.ptrtoint(one_past, i32, name=".sizeof")
 
+def _is_stack_derived_ptr(val: ir.Value) -> bool:
+    if val is None:
+        return False
+
+    seen = set()
+    cur = val
+    while True:
+        key = id(cur)
+        if key in seen:
+            return False
+        seen.add(key)
+
+        opname = getattr(cur, "opname", None)
+        if opname is None:
+            return False
+
+        if opname == "alloca":
+            return True
+
+        if opname in ("bistcast", "getelementptr", "addrspacecast"):
+            ops = getattr(cur, "operands", None)
+            if ops:
+                cur = ops[0]
+                continue
+            return False
+        return False
+
 class ASTNode(abc.ABC):
     _type: ir.Type = None
 
@@ -794,6 +821,17 @@ class AssignmentNode(TrackedNode):
                     exp = name_from_type_mapping.get(dst_ty, str(dst_ty))
                     got = name_from_type_mapping.get(value.type, str(value.type))
                     raise TypeError(f"Type mismatch in assignment at {self.line}:{self.column}: expected {exp}, got {got}")
+
+            # minimal auto boxing escape analysis
+            if isinstance(dst_ty, ir.PointerType) and isinstance(dst_ty.pointee, ir.Aggregate) and \
+                value.type == dst_ty and not (isinstance(value, ir.Constant) and value.constant is None) and \
+                _is_stack_derived_ptr(value):
+                nbytes = _sizeof_as_i32(builder, dst_ty.pointee)
+                raw = builder.call(module.globals["malloc"], [nbytes], name=".call.escapebox.malloc")
+                boxed_ptr = builder.bitcast(raw, dst_ty, name=".escapebox.ptr")
+                tmp_val = builder.load(value, name=".load.escapebox.src")
+                builder.store(tmp_val, boxed_ptr)
+                value = boxed_ptr
 
             builder.store(value, dst_ptr)
 
