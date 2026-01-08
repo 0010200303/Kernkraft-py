@@ -16,18 +16,20 @@ TRUE = ir.Constant(i1, 1)
 
 type_from_name_mapping = {
     "i32": i32,
+    "u32": i32,
     "bool": ir.IntType(1),
     "void": ir.VoidType(),
     "char": i8,
     "i8": i8,
+    "u8": i8,
 }
 
 name_from_type_mapping = {
-    i32: "i32",
+    i32: "i32/u32",
     i8p: "i8p",
     ir.IntType(1): "i1/bool",
     ir.VoidType(): "void",
-    i8: "i8/char",
+    i8: "i8/u8/char",
 }
 
 reserved_types = set()
@@ -83,6 +85,15 @@ def _is_stack_derived_ptr(val: ir.Value) -> bool:
                 continue
             return False
         return False
+
+def _is_unsigned_int_type(ty: ir.Type) -> bool:
+    if not isinstance(ty, ir.IntType):
+        return False
+
+    s = name_from_type_mapping.get(ty)
+    if s:
+        return f"u{ty.width}" in s
+    return False
 
 class ASTNode(abc.ABC):
     _type: ir.Type = None
@@ -1560,14 +1571,45 @@ class _EqualityBaseNode(TrackedNode):
         lhs_val = self.lhs.generate_ir(builder, module)
         rhs_val = self.rhs.generate_ir(builder, module)
 
-        if lhs_val.type != rhs_val.type:
+        str_ty = type_from_name_mapping.get("str")
+        def is_str_like(ty):
+            return str_ty is not None and (ty == str_ty or (isinstance(ty, ir.PointerType) and ty.pointee == str_ty))
+
+        if lhs_val.type != rhs_val.type and not (is_str_like(lhs_val.type) and is_str_like(rhs_val.type)):
             raise TypeError(f"{self.name} requires operands of the same type at {self.line}:{self.column}, left: {lhs_val.type}, right: {rhs_val.type}")
 
-        if isinstance(lhs_val.type, ir.IntType):
-            result = builder.icmp_signed(self.cmpop, lhs_val, rhs_val, name=f".{self.short}")
-        else:
-            raise TypeError(f"{self.name} not supported for type {name_from_type_mapping[lhs_val.type]} at {self.line}:{self.column}")
+        if is_str_like(lhs_val.type) and is_str_like(rhs_val.type):
+            def to_str_ptr(val):
+                if isinstance(val.type, ir.PointerType) and val.type.pointee == str_ty:
+                    return val
+                if val.type == str_ty:
+                    tmp = builder.alloca(str_ty, name=".tmp.strcmp")
+                    builder.store(val, tmp)
+                    return tmp
+                raise TypeError(f"{self.name} expected a string at {self.line}:{self.column}")
 
+            a_ptr = to_str_ptr(lhs_val)
+            b_ptr = to_str_ptr(rhs_val)
+
+            cmp_fn = module.globals.get("str_cmp")
+            if cmp_fn is None:
+                raise ValueError("Runtime 'str_cmp' function not found in module")
+
+            cmp_res = builder.call(cmp_fn, [a_ptr, b_ptr], name=".str.cmp")
+
+            if self.cmpop in ("==", ):
+                return builder.icmp_signed("==", cmp_res, ZERO, name=f".{self.short}")
+            if self.cmpop in ("!=", ):
+                return builder.icmp_signed("!=", cmp_res, ZERO, name=f".{self.short}")
+            raise TypeError(f"{self.name}: unsupported compare op {self.cmpop} for strings at {self.line}:{self.column}")
+
+        if isinstance(lhs_val.type, ir.IntType):
+            if _is_unsigned_int_type(lhs_val.type):
+                result = builder.icmp_unsigned(self.cmpop, lhs_val, rhs_val, name=f".{self.short}")
+            else:
+                result = builder.icmp_signed(self.cmpop, lhs_val, rhs_val, name=f".{self.short}")
+        else:
+            raise TypeError(f"{self.name} not supported for type {name_from_type_mapping.get(lhs_val.type, str(lhs_val.type))} at {self.line}:{self.column}")
         return result
 
 class BinaryEqualNode(_EqualityBaseNode):
