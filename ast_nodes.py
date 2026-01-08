@@ -743,6 +743,20 @@ class AssignmentNode(TrackedNode):
                 if module.globals.get(gv_name) is not None:
                     raise ValueError(f"Global {gv_name} already defined at {self.line}:{self.column}")
 
+                # special case for runtime initialized aggregates
+                str_ty = type_from_name_mapping.get("str")
+                if str_ty is not None and var_type == str_ty:
+                    zero_init = ir.Constant(var_type, (ir.Constant(i8p, None), ZERO, ZERO))
+                    g = ir.GlobalVariable(module, var_type, name=gv_name)
+                    g.initializer = zero_init
+                    g.global_constant = False
+
+                    val = self.value.generate_ir(builder, module)
+                    builder.store(val, g)
+
+                    builder.position_at_end(builder.block)
+                    return
+
                 init_val = self.value.value
                 init_const = ir.Constant(var_type, init_val)
 
@@ -1507,7 +1521,7 @@ class _EqualityBaseNode(TrackedNode):
         rhs_val = self.rhs.generate_ir(builder, module)
 
         if lhs_val.type != rhs_val.type:
-            raise TypeError(f"{self.name} requires operands of the same type at {self.line}:{self.column}")
+            raise TypeError(f"{self.name} requires operands of the same type at {self.line}:{self.column}, left: {lhs_val.type}, right: {rhs_val.type}")
 
         if isinstance(lhs_val.type, ir.IntType):
             result = builder.icmp_signed(self.cmpop, lhs_val, rhs_val, name=f".{self.short}")
