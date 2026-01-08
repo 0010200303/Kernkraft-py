@@ -124,6 +124,9 @@ class Parser:
             return self.parse_len()
         elif self.check(ImportToken):
             return self.parse_import()
+        elif self.check(ContinueToken):
+            token = self.consume(ContinueToken)
+            return ContinueNode(token.line, token.column)
 # endregion
         else:
             raise Exception(f"Unexpected token in expression: {self.current_token}")

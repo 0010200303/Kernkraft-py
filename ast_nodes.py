@@ -1238,25 +1238,36 @@ class WhileNode(TrackedNode):
 
         return ret
 
-    def generate_ir(self, builder, module):
+    def generate_ir(self, builder, module) -> None:
         cond_value = self.condition.generate_ir(builder, module)
 
         if not isinstance(cond_value.type, ir.IntType) or cond_value.type.width != 1:
             raise TypeError(f"While condition must be of type bool at {self.line}:{self.column}")
-        
+
         loop_bb = builder.append_basic_block("while.loop")
         after_bb = builder.append_basic_block("while.after")
+        loop_test_bb = builder.append_basic_block("while.cond")
+
         builder.cbranch(cond_value, loop_bb, after_bb)
 
-        builder.position_at_start(loop_bb)
+        old_continue = getattr(builder, "_loop_continue", None)
+        old_break = getattr(builder, "_loop_break", None)
+        builder._loop_continue = loop_test_bb
+        builder._loop_break = after_bb
 
-        builder.comment("while body")
+        builder.position_at_start(loop_bb)
         for stmt in self.body:
             stmt.generate_ir(builder, module)
 
-        builder.comment("termination test")
+        if not builder.block.is_terminated:
+            builder.branch(loop_test_bb)
+
+        builder.position_at_start(loop_test_bb)
         cond_value = self.condition.generate_ir(builder, module)
         builder.cbranch(cond_value, loop_bb, after_bb)
+
+        builder._loop_continue = old_continue
+        builder._loop_break = old_break
 
         builder.position_at_start(after_bb)
 
@@ -1383,6 +1394,19 @@ class IsNode(TrackedNode):
             return TRUE
         else:
             return FALSE
+
+class ContinueNode(TrackedNode):
+    def __repr__(self, level: int = 0) -> str:
+        return "\t" * level + f"ContinueNode() at {self.line}:{self.column}\n"
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
+        target = getattr(builder, "_loop_continue", None)
+        if target is None:
+            raise TypeError(f"'continue' not inside a loop at {self.line}:{self.column}")
+        builder.branch(target)
+
+        new_bb = builder.append_basic_block(".after.cont")
+        builder.position_at_start(new_bb)
 # endregion
 
 # region operators

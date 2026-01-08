@@ -153,4 +153,7 @@ class ImportToken(BaseToken):
 
 class IsToken(BaseToken):
     pass
+
+class ContinueToken(BaseToken):
+    pass
 # endregion

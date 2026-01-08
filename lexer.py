@@ -13,6 +13,7 @@ class Lexer:
         "len": LenToken,
         "import": ImportToken,
         "is": IsToken,
+        "continue": ContinueToken,
     }
 
     def __init__(self, data: str):
