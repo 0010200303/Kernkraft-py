@@ -118,6 +118,12 @@ class LessOrEqualToken(BaseToken):
 
 class GreaterOrEqualToken(BaseToken):
     pass
+
+class AndToken(BaseToken):
+    pass
+
+class OrToken(BaseToken):
+    pass
 # endregion
 
 # region keywords

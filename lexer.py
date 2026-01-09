@@ -14,6 +14,8 @@ class Lexer:
         "import": ImportToken,
         "is": IsToken,
         "continue": ContinueToken,
+        "and": AndToken,
+        "or": OrToken,
     }
 
     def __init__(self, data: str):

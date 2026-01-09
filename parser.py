@@ -11,6 +11,9 @@ MULTIPLICATIVE_BINDING_POWER = 20, 21
 MODULO_BINDING_POWER = 20, 21
 COMPARISON_BINDING_POWER = 3, 4
 
+AND_BINDING_POWER = 2, 3
+OR_BINDING_POWER = 1, 2
+
 class Parser:
     def __init__(self, tokens: list[BaseToken]):
         if not tokens:
@@ -56,16 +59,10 @@ class Parser:
                 raise Exception(f"Invalid assignment target at {self.current_token_pos()}: {expression}")
 
             return self.parse_assignment(expression)
-        elif self.check(OpenParenthesisToken):
-            if not isinstance(expression, (IdentifierNode | AccessNode)):
-                raise Exception(f"Invalid call target at {self.current_token_pos()}: {expression}")
-            
-            return self.parse_call(expression)
-
         return expression
 
     def get_prefix_binding_power(self) -> int | None:
-        if self.check(MinusToken):
+        if self.check(MinusToken) or self.check(IsToken):
             return UNARY_PREFIX_BINDING_POWER
         return None
 
@@ -77,9 +74,12 @@ class Parser:
         elif self.check(PercentToken):
             return MODULO_BINDING_POWER
         elif self.check(EqualToken) or self.check(NotEqualToken) or self.check(LessThanToken) or \
-            self.check(GreaterThanToken) or self.check(LessOrEqualToken) or self.check(GreaterOrEqualToken) or \
-            self.check(IsToken):
+            self.check(GreaterThanToken) or self.check(LessOrEqualToken) or self.check(GreaterOrEqualToken):
             return COMPARISON_BINDING_POWER
+        elif self.check(AndToken):
+            return AND_BINDING_POWER
+        elif self.check(OrToken):
+            return OR_BINDING_POWER
         return None
 
     def parse_prefix(self) -> ASTNode:
@@ -178,6 +178,15 @@ class Parser:
             right = self.parse_expression(binding_power)
             return BinaryGreaterOrEqualNode(left, right, operator_token.line, operator_token.column)
 
+        elif self.check(AndToken):
+            operator_token = self.consume(AndToken)
+            right = self.parse_expression(binding_power)
+            return BinaryAndNode(left, right, operator_token.line, operator_token.column)
+        elif self.check(OrToken):
+            operator_token = self.consume(OrToken)
+            right = self.parse_expression(binding_power)
+            return BinaryOrNode(left, right, operator_token.line, operator_token.column)
+
         elif self.check(IsToken):
             operator_token = self.consume(IsToken)
             type_name = self.parse_qualified_name()
@@ -196,6 +205,10 @@ class Parser:
                 index = self.parse_expression()
                 left = IndexAccessNode(left, index, index.line, index.column)
                 self.consume(CloseBracketToken, f"Expected ']' but got {self.current_token}")
+            elif self.check(OpenParenthesisToken):
+                if not isinstance(left, (IdentifierNode, AccessNode)):
+                    raise Exception(f"Invalid call target at {self.current_token_pos}: {left}")
+                left = self.parse_call(left)
             else:
                 break
 

@@ -1509,6 +1509,74 @@ class BinaryDivisionNode(TrackedNode):
         result = builder.sdiv(left_val, right_val, name=".div")
         return result
 
+class BinaryAndNode(TrackedNode):
+    def __init__(self, left: ASTNode, right: ASTNode, line: int, column: int):
+        super().__init__(line, column)
+        self.left = left
+        self.right = right
+
+    def __repr__(self, level: int = 0) -> str:
+        ret = "\t" * level + f"BinaryAndNode() at {self.line}:{self.column}\n"
+        ret += self.left.__repr__(level + 1)
+        ret += self.right.__repr__(level + 1)
+        return ret
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        left_val = self.left.generate_ir(builder, module)
+        if not (isinstance(left_val.type, ir.IntType) and left_val.type.width == 1):
+            raise TypeError(f"'and' requires boolean operands at {self.line}:{self.column}")
+        entry_bb = builder.block
+        rhs_bb = builder.append_basic_block(".and.rhs")
+        cont_bb = builder.append_basic_block(".and.end")
+        builder.cbranch(left_val, rhs_bb, cont_bb)
+
+        builder.position_at_start(rhs_bb)
+        right_val = self.right.generate_ir(builder, module)
+        if not (isinstance(right_val.type, ir.IntType) and right_val.type.width == 1):
+            raise TypeError(f"'and' requires boolean operands at {self.line}:{self.column}")
+        builder.branch(cont_bb)
+        rhs_bb_end = builder.block
+
+        builder.position_at_start(cont_bb)
+        phi = builder.phi(i1, name=".and")
+        phi.add_incoming(FALSE, entry_bb)
+        phi.add_incoming(right_val, rhs_bb_end)
+        return phi
+
+class BinaryOrNode(TrackedNode):
+    def __init__(self, left: ASTNode, right: ASTNode, line: int, column: int):
+        super().__init__(line, column)
+        self.left = left
+        self.right = right
+
+    def __repr__(self, level: int = 0) -> str:
+        ret = "\t" * level + f"BinaryOrNode() at {self.line}:{self.column}\n"
+        ret += self.left.__repr__(level + 1)
+        ret += self.right.__repr__(level + 1)
+        return ret
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        left_val = self.left.generate_ir(builder, module)
+        if not (isinstance(left_val.type, ir.IntType) and left_val.type.width == 1):
+            raise TypeError(f"'or' requires boolean operands at {self.line}:{self.column}")
+        entry_bb = builder.block
+        rhs_bb = builder.append_basic_block(".or.rhs")
+        cont_bb = builder.append_basic_block(".or.end")
+        builder.cbranch(left_val, cont_bb, rhs_bb)
+
+        builder.position_at_start(rhs_bb)
+        right_val = self.right.generate_ir(builder, module)
+        if not (isinstance(right_val.type, ir.IntType) and right_val.type.width == 1):
+            raise TypeError(f"'or' requires boolean operands at {self.line}:{self.column}")
+        builder.branch(cont_bb)
+        rhs_bb_end = builder.block
+
+        builder.position_at_start(cont_bb)
+        phi = builder.phi(i1, name=".or")
+        phi.add_incoming(TRUE, entry_bb)
+        phi.add_incoming(right_val, rhs_bb_end)
+        return phi
+
 class UnaryNegationNode(TrackedNode):
     def __init__(self, operand: ASTNode, line: int, column: int):
         super().__init__(line, column)
