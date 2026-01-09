@@ -16,6 +16,8 @@ class Lexer:
         "continue": ContinueToken,
         "and": AndToken,
         "or": OrToken,
+        "true": TrueToken,
+        "false": FalseToken,
     }
 
     def __init__(self, data: str):

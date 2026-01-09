@@ -40,6 +40,10 @@ reserved_keywords = {
     "func",
     "len",
     "is",
+    "and",
+    "or",
+    "true",
+    "false",
 }
 
 def _is_scalar_type(ty: ir.Type) -> bool:
@@ -908,12 +912,24 @@ class CharLiteralNode(TrackedNode):
     def __repr__(self, level: int = 0) -> str:
         return "\t" * level + f"CharLiteralNode('{self.value}') at {self.line}:{self.column}\n"
 
-    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Type:
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
         # escape char
         byte_arr = bytes(self.value, "utf8").decode("unicode_escape").encode("utf8")
         if len(byte_arr) != 1:
             raise TypeError(f"Char literal must be exactly one byte at {self.line}:{self.column}")
         return ir.Constant(i8, byte_arr[0])
+
+class BoolLiteralNode(TrackedNode):
+    def __init__(self, value: bool, line: int, column: int):
+        super().__init__(line, column)
+        self._type = i1
+        self.value = value
+
+    def __repr__(self, level: int = 0) -> str:
+        return "\t" * level + f"BoolLiteralNode({self.value}) at {self.line}:{self.column}\n"
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> ir.Value:
+        return TRUE if self.value == True else FALSE
 # endregion
 
 # region keyword nodes

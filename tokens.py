@@ -162,4 +162,10 @@ class IsToken(BaseToken):
 
 class ContinueToken(BaseToken):
     pass
+
+class TrueToken(BaseToken):
+    pass
+
+class FalseToken(BaseToken):
+    pass
 # endregion

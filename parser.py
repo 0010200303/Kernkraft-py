@@ -100,6 +100,12 @@ class Parser:
             return self.parse_integer_literal()
         elif self.check(CharLiteralToken):
             return self.parse_char_literal()
+        elif self.check(TrueToken):
+            token = self.consume(TrueToken)
+            return BoolLiteralNode(True, token.line, token.column)
+        elif self.check(FalseToken):
+            token = self.consume(FalseToken)
+            return BoolLiteralNode(False, token.line, token.column)
 # endregion
         elif self.check(IdentifierToken):
             return self.parse_identifier()
