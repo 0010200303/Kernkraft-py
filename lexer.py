@@ -148,7 +148,7 @@ class Lexer:
                 if self.tokens and isinstance(self.tokens[-1], EndOfLineToken) is False:
                     self.tokens.append(EndOfLineToken(self.line, self.column))
                 self.advance()
-                
+
                 # Handle indentation after newline
                 self.handle_indentation()
 
@@ -156,6 +156,7 @@ class Lexer:
             elif self.current_char == '/' and self.peek() == '/':
                 while self.current_char is not None and self.current_char != '\n':
                     self.advance()
+                self.advance()
                 self.new_line()
                 
                 # Handle indentation after comment
