@@ -1,4 +1,5 @@
 import typing
+from collections import ChainMap
 from llvmlite import ir
 from ast_nodes import *
 
@@ -359,9 +360,9 @@ class IR_Generator:
         module.triple = self.module_triple
         module.module_name = self.module_name
 
-        # sloppy, no scoping
-        if not hasattr(module, "symbol_table"):
-            module.symbol_table = {}
+        # block scopring using ChainMap
+        if not hasattr(module, "symbol_table") or module.symbol_table is None:
+            module.symbol_table = ChainMap({})
 
         if "printf" not in module.globals:
             ir.Function(module, printf_type, name="printf").linkage = "external"

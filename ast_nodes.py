@@ -1,5 +1,7 @@
 import abc
 import typing
+from collections import ChainMap
+from contextlib import contextmanager
 from llvmlite import ir
 
 i1 = ir.IntType(1)
@@ -45,6 +47,14 @@ reserved_keywords = {
     "true",
     "false",
 }
+
+@contextmanager
+def _block_scope(module: ir.Module):
+    module.symbol_table = module.symbol_table.new_child()
+    try:
+        yield
+    finally:
+        module.symbol_table = module.symbol_table.parents
 
 def _is_scalar_type(ty: ir.Type) -> bool:
     # Scalars are values typically loaded/stored directly (vs aggregates/arrays)
@@ -1154,7 +1164,7 @@ class FunctionNode(TrackedNode):
 
         # create new symbol table scope
         old_symbol_table = module.symbol_table
-        module.symbol_table = {}
+        module.symbol_table = ChainMap({})
 
         for statement in self.body:
             statement.generate_ir(func_builder, module)
@@ -1237,16 +1247,19 @@ class IfNode(TrackedNode):
 
         if self.else_branch is None or len(self.else_branch) == 0:
             with builder.if_then(cond_value) as then:
-                for stmt in self.then_branch:
-                    stmt.generate_ir(builder, module)
+                with _block_scope(module):
+                    for stmt in self.then_branch:
+                        stmt.generate_ir(builder, module)
         else:
             with builder.if_else(cond_value) as (then, otherwise):
                 with then:
-                    for stmt in self.then_branch:
-                        stmt.generate_ir(builder, module)
+                    with _block_scope(module):
+                        for stmt in self.then_branch:
+                            stmt.generate_ir(builder, module)
                 with otherwise:
-                    for stmt in self.else_branch:
-                        stmt.generate_ir(builder, module)
+                    with _block_scope(module):
+                        for stmt in self.else_branch:
+                            stmt.generate_ir(builder, module)
 
 class WhileNode(TrackedNode):
     def __init__(self, condition: ASTNode, line: int, column: int):
@@ -1283,11 +1296,12 @@ class WhileNode(TrackedNode):
         builder._loop_break = after_bb
 
         builder.position_at_start(loop_bb)
-        for stmt in self.body:
-            stmt.generate_ir(builder, module)
+        with _block_scope(module):
+            for stmt in self.body:
+                stmt.generate_ir(builder, module)
 
-        if not builder.block.is_terminated:
-            builder.branch(loop_test_bb)
+            if not builder.block.is_terminated:
+                builder.branch(loop_test_bb)
 
         builder.position_at_start(loop_test_bb)
         cond_value = self.condition.generate_ir(builder, module)
