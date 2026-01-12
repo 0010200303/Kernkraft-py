@@ -44,6 +44,8 @@ reserved_keywords = {
     "is",
     "and",
     "or",
+    "continue",
+    "break",
     "true",
     "false",
 }
@@ -1447,6 +1449,19 @@ class ContinueNode(TrackedNode):
         builder.branch(target)
 
         new_bb = builder.append_basic_block(".after.cont")
+        builder.position_at_start(new_bb)
+
+class BreakNode(TrackedNode):
+    def __repr__(self, level: int = 0) -> str:
+        return "\t" * level + f"BreakNode() at {self.line}:{self.column}"
+
+    def generate_ir(self, builder: ir.IRBuilder, module: ir.Module) -> None:
+        target = getattr(builder, "_loop_break", None)
+        if target is None:
+            raise TypeError(f"'break' not inside a loop at {self.line}:{self.column}")
+        builder.branch(target)
+
+        new_bb = builder.append_basic_block(".after.brk")
         builder.position_at_start(new_bb)
 # endregion
 

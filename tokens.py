@@ -163,6 +163,9 @@ class IsToken(BaseToken):
 class ContinueToken(BaseToken):
     pass
 
+class BreakToken(BaseToken):
+    pass
+
 class TrueToken(BaseToken):
     pass
 

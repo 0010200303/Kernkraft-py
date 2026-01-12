@@ -14,6 +14,7 @@ class Lexer:
         "import": ImportToken,
         "is": IsToken,
         "continue": ContinueToken,
+        "break": BreakToken,
         "and": AndToken,
         "or": OrToken,
         "true": TrueToken,
@@ -97,17 +98,13 @@ class Lexer:
 
         string = ""
         while self.current_char is not None and self.current_char != '"':
-            # closing quote
-            if self.current_char == '"':
-                break
-
             # new line
             if self.current_char == "\n":
                 self.new_line()
                 self.advance()
 
             # escape sequence
-            if self.current_char == "\\":
+            elif self.current_char == "\\":
                 self.advance()
                 if self.current_char is None:
                     raise Exception(f"Unterminated string escape at {self.line}:{self.column}")
