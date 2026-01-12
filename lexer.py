@@ -92,19 +92,51 @@ class Lexer:
     def string_literal(self) -> StringLiteralToken:
         self.consume('"', f"Expected '\"' at the start of string literal at {self.position}")
 
-        start_pos = self.position
+        start_line = self.line
+        start_column = self.column - 1
+
+        string = ""
         while self.current_char is not None and self.current_char != '"':
+            # closing quote
+            if self.current_char == '"':
+                break
+
+            # new line
             if self.current_char == "\n":
                 self.new_line()
+                self.advance()
 
+            # escape sequence
+            if self.current_char == "\\":
+                self.advance()
+                if self.current_char is None:
+                    raise Exception(f"Unterminated string escape at {self.line}:{self.column}")
+                esc = self.current_char
+                mapping = {
+                    "n": "\n",
+                    "t": "\t",
+                    "r": "\r",
+                    '"': '"',
+                    "'": "'",
+                    "\\": "\\",
+                }
+                char = mapping.get(esc, None)
+                if char is None:
+                    raise Exception(f"Unknown escape '\\{esc}' sequence at {self.line}:{self.column}")
+
+                string += char
+                self.advance()
+                continue
+
+            # normal char
+            string += self.current_char
             self.advance()
 
         if self.current_char is None:
-            raise Exception(f"Unterminated string literal at {self.position}")
+            raise Exception(f"Unterminated string literal at {self.line}:{self.column}")
 
-        value = self.data[start_pos:self.position]
         self.advance()
-        return StringLiteralToken(value, self.line, self.column - (self.position - start_pos) - 1)
+        return StringLiteralToken(string, start_line, start_column)
 
     def char_literal(self) -> CharLiteralToken:
         self.consume("'", f"Expected ''' at the start of char literal at {self.position}")
@@ -130,11 +162,13 @@ class Lexer:
 
     def identifier(self) -> IdentifierToken:
         start_pos = self.position
+        start_line = self.line
+        start_column = self.column
         while (self.current_char is not None and (self.current_char.isalnum() or self.current_char == '_')):
             self.advance()
 
         name = self.data[start_pos:self.position]
-        return IdentifierToken(name, self.line, self.column - (self.position - start_pos))
+        return IdentifierToken(name, start_line, start_column)
 
     def tokenize(self) -> list[BaseToken]:
         # Handle indentation at start of file
@@ -290,7 +324,7 @@ class Lexer:
                 self.advance()
 
             else:
-                raise Exception(f"Unexpected character: {self.current_char} at position {self.position}")
+                raise Exception(f"Unexpected character: {self.current_char} at {self.line}:{self.column}")
 
         # Emit remaining dedents at EOF
         for _ in range(self.indent_level):
